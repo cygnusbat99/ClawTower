@@ -1,13 +1,13 @@
 #!/bin/bash
-# Setup Slack webhook for OpenClawAV independent alerting
+# Setup Slack webhook for ClawAV independent alerting
 # This webhook must be SEPARATE from any OpenClaw Slack integration
 
 set -euo pipefail
 
-CONFIG_FILE="${1:-/etc/openclawav/config.toml}"
+CONFIG_FILE="${1:-/etc/clawav/config.toml}"
 
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║       OpenClawAV — Independent Slack Webhook Setup      ║"
+echo "║       ClawAV — Independent Slack Webhook Setup      ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 echo "⚠️  This webhook must be INDEPENDENT of OpenClaw's Slack."
@@ -17,7 +17,7 @@ echo ""
 echo "Steps to create an Incoming Webhook:"
 echo "  1. Go to https://api.slack.com/apps"
 echo "  2. Click 'Create New App' → 'From scratch'"
-echo "  3. Name it 'OpenClawAV Watchdog' (or similar)"
+echo "  3. Name it 'ClawAV Watchdog' (or similar)"
 echo "  4. Select your workspace"
 echo "  5. Go to 'Incoming Webhooks' → Toggle ON"
 echo "  6. Click 'Add New Webhook to Workspace'"
@@ -36,7 +36,7 @@ fi
 echo "Testing webhook..."
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$WEBHOOK_URL" \
     -H 'Content-Type: application/json' \
-    -d '{"text":"🛡️ OpenClawAV test message — webhook configured successfully!"}')
+    -d '{"text":"🛡️ ClawAV test message — webhook configured successfully!"}')
 
 if [ "$HTTP_CODE" = "200" ]; then
     echo "✅ Webhook test successful! Check your Slack channel."
@@ -62,4 +62,4 @@ else
 fi
 
 echo ""
-echo "Done! OpenClawAV will now send alerts to Slack independently."
+echo "Done! ClawAV will now send alerts to Slack independently."

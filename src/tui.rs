@@ -155,7 +155,7 @@ fn render_system_tab(f: &mut Frame, area: Rect, app: &App) {
 
     let text = vec![
         Line::from(vec![
-            Span::styled("OpenClawAV v0.1.0", Style::default().fg(Color::Cyan).bold()),
+            Span::styled("ClawAV v0.1.0", Style::default().fg(Color::Cyan).bold()),
         ]),
         Line::from(""),
         Line::from(vec![
@@ -196,7 +196,7 @@ fn ui(f: &mut Frame, app: &App) {
     // Tab bar
     let titles: Vec<Line> = app.tab_titles.iter().map(|t| Line::from(t.as_str())).collect();
     let tabs = Tabs::new(titles)
-        .block(Block::default().borders(Borders::ALL).title(" 🛡️ OpenClawAV "))
+        .block(Block::default().borders(Borders::ALL).title(" 🛡️ ClawAV "))
         .select(app.selected_tab)
         .style(Style::default().fg(Color::White))
         .highlight_style(Style::default().fg(Color::Cyan).bold());

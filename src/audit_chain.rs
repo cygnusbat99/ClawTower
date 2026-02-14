@@ -150,7 +150,7 @@ impl AuditChain {
 
 /// Run verify-audit subcommand
 pub fn run_verify_audit(path: Option<&str>) -> Result<()> {
-    let path = path.unwrap_or("/var/log/openclawav/audit.chain");
+    let path = path.unwrap_or("/var/log/clawav/audit.chain");
     let path = Path::new(path);
 
     match AuditChain::verify(path) {

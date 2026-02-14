@@ -1,6 +1,6 @@
 # API Reference
 
-OpenClawAV serves a JSON API on port **18791** (configurable via `config.toml`). LAN-only access, no authentication — restrict via firewall rules.
+ClawAV serves a JSON API on port **18791** (configurable via `config.toml`). LAN-only access, no authentication — restrict via firewall rules.
 
 ## Endpoints
 
@@ -48,7 +48,7 @@ curl http://localhost:18791/api/alerts
     "ts": "2026-02-13T22:00:00-05:00",
     "severity": "INFO",
     "source": "system",
-    "message": "OpenClawAV watchdog started"
+    "message": "ClawAV watchdog started"
   },
   {
     "ts": "2026-02-13T22:00:05-05:00",

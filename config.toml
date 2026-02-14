@@ -3,8 +3,8 @@
 watched_user = "1000"
 # Alert severity threshold (info, warning, critical)
 min_alert_level = "warning"
-# Log file for OpenClawAV's own logs
-log_file = "/var/log/openclawav/watchdog.log"
+# Log file for ClawAV's own logs
+log_file = "/var/log/clawav/watchdog.log"
 
 [slack]
 # IMPORTANT: This webhook must be completely independent of OpenClaw's Slack integration.

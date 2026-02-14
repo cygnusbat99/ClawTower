@@ -1,10 +1,10 @@
-# 🛡️ OpenClawAV
+# 🛡️ ClawAV
 
-**Tamper-proof, OS-level security watchdog for AI agents.** OpenClawAV monitors an AI agent's every syscall, network connection, and file access at the kernel level — and cannot be disabled, modified, or silenced by the agent, even under full prompt injection compromise. Once installed, the only way to change it is physical access and a recovery boot.
+**Tamper-proof, OS-level security watchdog for AI agents.** ClawAV monitors an AI agent's every syscall, network connection, and file access at the kernel level — and cannot be disabled, modified, or silenced by the agent, even under full prompt injection compromise. Once installed, the only way to change it is physical access and a recovery boot.
 
 ## Why
 
-AI agents like [OpenClaw](https://github.com/openclaw) run with real OS access — executing commands, reading files, making network requests. A prompt injection attack can weaponize that access: exfiltrating secrets, disabling firewalls, escalating privileges. Traditional security tools trust their operator; OpenClawAV assumes the operator (the AI) is compromised and builds an independent monitoring layer the agent cannot touch.
+AI agents like [OpenClaw](https://github.com/openclaw) run with real OS access — executing commands, reading files, making network requests. A prompt injection attack can weaponize that access: exfiltrating secrets, disabling firewalls, escalating privileges. Traditional security tools trust their operator; ClawAV assumes the operator (the AI) is compromised and builds an independent monitoring layer the agent cannot touch.
 
 ## Architecture
 
@@ -69,15 +69,15 @@ cargo run -- verify-audit /path/to/audit.chain
 
 ## Installation
 
-The installer (`scripts/install.sh`) implements the **"Swallowed Key"** pattern — 7 layers of tamper protection that make OpenClawAV immutable once installed:
+The installer (`scripts/install.sh`) implements the **"Swallowed Key"** pattern — 7 layers of tamper protection that make ClawAV immutable once installed:
 
 | Step | What it does |
 |------|-------------|
-| 1. System user | Creates `openclawav` user with no login shell |
-| 2. Binary + config | Installs to `/usr/local/bin/openclawav` and `/etc/openclawav/` |
+| 1. System user | Creates `clawav` user with no login shell |
+| 2. Binary + config | Installs to `/usr/local/bin/clawav` and `/etc/clawav/` |
 | 3. systemd service | `Restart=always`, `WatchdogSec=30`, `NoNewPrivileges=true` |
 | 4. Immutable flags | `chattr +i` on binary, config, and service file |
-| 5. AppArmor | Denies `openclaw` user access to all OpenClawAV paths |
+| 5. AppArmor | Denies `openclaw` user access to all ClawAV paths |
 | 6. Capability dropping | Strips `CAP_LINUX_IMMUTABLE`, `CAP_SYS_PTRACE`, `CAP_SYS_MODULE` from openclaw |
 | 7. Kernel hardening | `kernel.modules_disabled=1`, `yama.ptrace_scope=2`, `auditctl -e 2` |
 
@@ -124,14 +124,14 @@ rules:
 - **`open`/`openat`** — blocks writes to protected paths (e.g., `/etc/shadow`)
 - **`connect`** — blocks connections to denied addresses
 
-Policy loaded once at init from `/etc/openclawav/preload-policy.json`:
+Policy loaded once at init from `/etc/clawav/preload-policy.json`:
 ```json
 {
   "enabled": true,
   "deny_exec": ["bash -c", "sh -c"],
-  "deny_paths_write": ["/etc/shadow", "/etc/passwd", "/etc/openclawav"],
+  "deny_paths_write": ["/etc/shadow", "/etc/passwd", "/etc/clawav"],
   "deny_connect": [],
-  "log_file": "/var/log/openclawav/preload.log"
+  "log_file": "/var/log/clawav/preload.log"
 }
 ```
 
@@ -139,7 +139,7 @@ Denied calls return `EACCES` and are logged.
 
 ## YAML Policy Engine
 
-Rules are loaded from `policies/*.yaml` and `/etc/openclawav/policies/*.yaml`.
+Rules are loaded from `policies/*.yaml` and `/etc/clawav/policies/*.yaml`.
 
 ```yaml
 rules:
@@ -165,7 +165,7 @@ See [docs/POLICIES.md](docs/POLICIES.md) for the full schema.
 
 ## Admin Key
 
-At first run, OpenClawAV generates a 256-bit key (displayed once, stored as Argon2 hash):
+At first run, ClawAV generates a 256-bit key (displayed once, stored as Argon2 hash):
 
 ```
 ╔══════════════════════════════════════════════════════════════╗
@@ -174,7 +174,7 @@ At first run, OpenClawAV generates a 256-bit key (displayed once, stored as Argo
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
-Commands via unix socket (`/var/run/openclawav/admin.sock`):
+Commands via unix socket (`/var/run/clawav/admin.sock`):
 - `status` — Check watchdog state
 - `scan` — Trigger manual security scan
 - `pause` — Pause monitoring (max 30 minutes, auto-resume)
@@ -205,7 +205,7 @@ watched_user = "1000"          # UID of the monitored user (backward compat)
 watched_users = ["1000", "1001"]  # Monitor multiple users
 watch_all_users = false        # Set true to monitor ALL users
 min_alert_level = "warning"
-log_file = "/var/log/openclawav/watchdog.log"
+log_file = "/var/log/clawav/watchdog.log"
 
 [slack]
 webhook_url = "https://hooks.slack.com/..."    # Independent webhook
@@ -250,7 +250,7 @@ dir = "./policies"
 
 ## SecureClaw Integration
 
-OpenClawAV integrates with [SecureClaw](https://github.com/adversa-ai/secureclaw) pattern databases to enhance detection capabilities:
+ClawAV integrates with [SecureClaw](https://github.com/adversa-ai/secureclaw) pattern databases to enhance detection capabilities:
 
 - **Prompt injection patterns** - 70+ regex patterns across 7 categories
 - **Dangerous commands** - Command patterns with severity levels and actions
@@ -296,7 +296,7 @@ cargo test
 | Agent loads kernel module | `kernel.modules_disabled=1` |
 | Agent ptraces the watchdog | `yama.ptrace_scope=2` + CAP_SYS_PTRACE dropped |
 | Agent tampers with audit trail | Hash chain makes modifications detectable |
-| Agent compromises Slack integration | OpenClawAV uses its own independent webhook |
+| Agent compromises Slack integration | ClawAV uses its own independent webhook |
 | PII/secrets leaked via LLM API | DLP proxy scans outbound requests (SSN, credit cards, AWS keys) |
 | Side-channel attacks (Spectre, Meltdown) | Kernel mitigation scanner + side-channel tool detection + perf_event_open monitoring |
 | Attacks targeting other system users | Multi-user monitoring (`watched_users` list or `watch_all_users = true`) |
@@ -306,7 +306,7 @@ cargo test
 
 - **Physical access** — by design, physical access is the recovery path
 - **Kernel exploits** — a kernel 0-day could bypass all userspace protections
-- **Pre-installation compromise** — OpenClawAV must be installed from a trusted state
+- **Pre-installation compromise** — ClawAV must be installed from a trusted state
 
 ## License
 

@@ -1,5 +1,5 @@
 /*
- * libclawguard.so — LD_PRELOAD syscall interception for OpenClawAV
+ * libclawguard.so — LD_PRELOAD syscall interception for ClawAV
  *
  * Intercepts execve, open, openat, connect and checks against a cached
  * JSON policy loaded once at library init.  Denied calls return -1/EACCES.
@@ -24,13 +24,13 @@
 
 /* ── Policy config ─────────────────────────────────────────────────────── */
 
-#define POLICY_PATH      "/etc/openclawav/preload-policy.json"
+#define POLICY_PATH      "/etc/clawav/preload-policy.json"
 #define MAX_RULES        64
 #define MAX_RULE_LEN     256
 #define MAX_LOG_PATH     256
 
 static int   g_enabled = 0;
-static char  g_log_file[MAX_LOG_PATH] = "/var/log/openclawav/preload.log";
+static char  g_log_file[MAX_LOG_PATH] = "/var/log/clawav/preload.log";
 
 static char  g_deny_exec[MAX_RULES][MAX_RULE_LEN];
 static int   g_deny_exec_count = 0;

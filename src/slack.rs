@@ -50,9 +50,9 @@ impl SlackNotifier {
 
         let payload = json!({
             "channel": self.channel,
-            "username": "OpenClawAV",
+            "username": "ClawAV",
             "icon_emoji": ":shield:",
-            "text": "🛡️ OpenClawAV webhook test — connection verified!"
+            "text": "🛡️ ClawAV webhook test — connection verified!"
         });
 
         let resp = reqwest::Client::new()
@@ -76,9 +76,9 @@ impl SlackNotifier {
 
         let payload = json!({
             "channel": self.channel,
-            "username": "OpenClawAV",
+            "username": "ClawAV",
             "icon_emoji": ":shield:",
-            "text": "🛡️ OpenClawAV watchdog started — independent monitoring active"
+            "text": "🛡️ ClawAV watchdog started — independent monitoring active"
         });
 
         self.post_webhook(&payload).await
@@ -97,11 +97,11 @@ impl SlackNotifier {
 
         let payload = json!({
             "channel": self.channel,
-            "username": "OpenClawAV",
+            "username": "ClawAV",
             "icon_emoji": ":shield:",
             "attachments": [{
                 "color": color,
-                "title": format!("{} OpenClawAV Alert", alert.severity.emoji()),
+                "title": format!("{} ClawAV Alert", alert.severity.emoji()),
                 "text": alert.message,
                 "fields": [
                     { "title": "Severity", "value": alert.severity.to_string(), "short": true },

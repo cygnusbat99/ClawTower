@@ -167,7 +167,7 @@ pub async fn run_aggregator(
     let mut cleanup_counter: u32 = 0;
 
     // Initialize audit chain
-    let mut audit_chain = match crate::audit_chain::AuditChain::new("/var/log/openclawav/audit.chain") {
+    let mut audit_chain = match crate::audit_chain::AuditChain::new("/var/log/clawav/audit.chain") {
         Ok(chain) => Some(chain),
         Err(e) => {
             eprintln!("Warning: Failed to initialize audit chain: {}. Continuing without it.", e);

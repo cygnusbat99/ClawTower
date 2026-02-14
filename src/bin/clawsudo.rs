@@ -1,4 +1,4 @@
-//! clawsudo — sudo proxy/gatekeeper for OpenClawAV
+//! clawsudo — sudo proxy/gatekeeper for ClawAV
 //!
 //! Every privileged command goes through policy evaluation before execution.
 //! Usage: clawsudo <command> [args...]
@@ -159,7 +159,7 @@ fn log_line(status: &str, full_cmd: &str) {
     let line = format!("[{}] [{}] user=openclaw cmd=\"{}\"\n", ts, status, full_cmd);
 
     // Try production path, fall back to local
-    let log_paths: &[&str] = &["/var/log/openclawav/clawsudo.log", "./clawsudo.log"];
+    let log_paths: &[&str] = &["/var/log/clawav/clawsudo.log", "./clawsudo.log"];
     for path in log_paths {
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -172,7 +172,7 @@ fn log_line(status: &str, full_cmd: &str) {
     }
 
     // Also append to audit chain if it exists
-    let chain_path = "/var/log/openclawav/audit.chain";
+    let chain_path = "/var/log/clawav/audit.chain";
     if Path::new(chain_path).exists() {
         if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(chain_path) {
             let _ = f.write_all(line.as_bytes());
@@ -184,7 +184,7 @@ fn log_line(status: &str, full_cmd: &str) {
 
 fn load_webhook_url() -> Option<String> {
     let paths = [
-        PathBuf::from("/etc/openclawav/config.toml"),
+        PathBuf::from("/etc/clawav/config.toml"),
         PathBuf::from("./config.toml"),
     ];
     for path in &paths {
@@ -233,7 +233,7 @@ fn main() -> ExitCode {
 
     // Load policies
     let policy_dirs: Vec<&Path> = vec![
-        Path::new("/etc/openclawav/policies/"),
+        Path::new("/etc/clawav/policies/"),
         Path::new("./policies/"),
     ];
     let rules = load_policies(&policy_dirs);
@@ -485,9 +485,9 @@ mod tests {
     }
 
     #[test]
-    fn test_openclawav_tamper_denied() {
+    fn test_clawav_tamper_denied() {
         let rules = load_test_rules();
-        let result = evaluate(&rules, "chattr", "chattr +i /etc/openclawav/config.toml").unwrap();
+        let result = evaluate(&rules, "chattr", "chattr +i /etc/clawav/config.toml").unwrap();
         assert_eq!(result.enforcement, Enforcement::Deny);
     }
 

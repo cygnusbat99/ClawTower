@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# OpenClawAV — Falco Installation for ARM64 (Raspberry Pi 5)
+# ClawAV — Falco Installation for ARM64 (Raspberry Pi 5)
 # Installs Falco from official aarch64 tarball, deploys custom rules,
-# configures JSON file output for parsing by OpenClawAV.
+# configures JSON file output for parsing by ClawAV.
 
 FALCO_VERSION="${FALCO_VERSION:-0.42.0}"
 FALCO_RULES_SRC="$(dirname "$0")/../rules/openclaw_falco_rules.yaml"
@@ -11,7 +11,7 @@ FALCO_RULES_DST="/etc/falco/rules.d/openclaw_rules.yaml"
 FALCO_CONFIG="/etc/falco/falco.yaml"
 FALCO_OUTPUT_LOG="/var/log/falco/falco_output.jsonl"
 
-echo "=== OpenClawAV Falco Setup ==="
+echo "=== ClawAV Falco Setup ==="
 echo "Falco version: ${FALCO_VERSION}"
 echo "Architecture: $(uname -m)"
 
@@ -87,7 +87,7 @@ else
     echo "WARNING: Custom rules file not found at ${FALCO_RULES_SRC}"
 fi
 
-# Configure Falco for JSON file output (for OpenClawAV parsing)
+# Configure Falco for JSON file output (for ClawAV parsing)
 # Append/update file_output in falco.yaml
 if [[ -f "${FALCO_CONFIG}" ]]; then
     # Enable file output in JSON format
@@ -97,7 +97,7 @@ if [[ -f "${FALCO_CONFIG}" ]]; then
     
     cat >> "${FALCO_CONFIG}" << EOF
 
-# OpenClawAV: JSON file output for log parsing
+# ClawAV: JSON file output for log parsing
 file_output:
   enabled: true
   keep_alive: true

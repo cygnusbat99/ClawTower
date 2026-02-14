@@ -156,12 +156,12 @@ pub fn parse_auditctl_status(output: &str) -> ScanResult {
 
 pub fn scan_integrity() -> ScanResult {
     // Check if binary exists and get its hash
-    let _binary_path = "/usr/local/bin/openclawav";
-    let _config_path = "/etc/openclawav/config.toml";
-    let checksums_path = "/etc/openclawav/checksums.sha256";
+    let _binary_path = "/usr/local/bin/clawav";
+    let _config_path = "/etc/clawav/config.toml";
+    let checksums_path = "/etc/clawav/checksums.sha256";
 
     if !std::path::Path::new(checksums_path).exists() {
-        return ScanResult::new("integrity", ScanStatus::Warn, "No checksums file found — run 'openclawav --store-checksums' to create baseline");
+        return ScanResult::new("integrity", ScanStatus::Warn, "No checksums file found — run 'clawav --store-checksums' to create baseline");
     }
 
     let stored = match std::fs::read_to_string(checksums_path) {
@@ -230,7 +230,7 @@ pub fn scan_ssh() -> ScanResult {
 pub fn scan_listening_services() -> ScanResult {
     match run_cmd("ss", &["-tlnp"]) {
         Ok(output) => {
-            let expected_ports = ["18791"]; // OpenClawAV API
+            let expected_ports = ["18791"]; // ClawAV API
             let mut unexpected = Vec::new();
             for line in output.lines().skip(1) {
                 let parts: Vec<&str> = line.split_whitespace().collect();
@@ -391,7 +391,7 @@ impl SecurityScanner {
             scan_secureclaw_sync(),
             scan_cognitive_integrity(
                 std::path::Path::new("/home/openclaw/.openclaw/workspace"),
-                std::path::Path::new("/etc/openclawav/cognitive-baselines.sha256"),
+                std::path::Path::new("/etc/clawav/cognitive-baselines.sha256"),
             ),
             crate::logtamper::scan_audit_log_health(std::path::Path::new("/var/log/audit/audit.log")),
         ]

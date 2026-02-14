@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
     let config_path = args
         .get(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/etc/openclawav/config.toml"));
+        .unwrap_or_else(|| PathBuf::from("/etc/clawav/config.toml"));
 
     let config = Config::load(&config_path)?;
     let notifier = SlackNotifier::new(&config.slack);
@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
     // Load policy engine
     let policy_engine = if config.policy.enabled {
         let policy_dir = std::path::Path::new(&config.policy.dir);
-        let system_dir = std::path::Path::new("/etc/openclawav/policies");
+        let system_dir = std::path::Path::new("/etc/clawav/policies");
         match policy::PolicyEngine::load_dirs(&[policy_dir, system_dir]) {
             Ok(engine) => {
                 eprintln!("Policy engine loaded: {} rules", engine.rule_count());
@@ -229,12 +229,12 @@ async fn main() -> Result<()> {
     }
 
     // Initialize admin key and spawn admin socket
-    let admin_key_hash_path = PathBuf::from("/etc/openclawav/admin.key.hash");
+    let admin_key_hash_path = PathBuf::from("/etc/clawav/admin.key.hash");
     if let Err(e) = admin::init_admin_key(&admin_key_hash_path) {
         eprintln!("Admin key init: {} (non-fatal, admin socket will still start)", e);
     }
     let admin_socket = admin::AdminSocket::new(
-        PathBuf::from("/var/run/openclawav/admin.sock"),
+        PathBuf::from("/var/run/clawav/admin.sock"),
         admin_key_hash_path,
         raw_tx.clone(),
     );
@@ -255,7 +255,7 @@ async fn main() -> Result<()> {
     }
 
     // Send startup alert (through aggregator)
-    let startup = Alert::new(Severity::Info, "system", "OpenClawAV watchdog started");
+    let startup = Alert::new(Severity::Info, "system", "ClawAV watchdog started");
     let _ = raw_tx.send(startup).await;
 
     // Check for --headless flag
@@ -264,7 +264,7 @@ async fn main() -> Result<()> {
     if headless {
         // Headless mode: just drain alerts and log them
         let mut alert_rx = alert_rx;
-        eprintln!("OpenClawAV running in headless mode (Ctrl+C to stop)");
+        eprintln!("ClawAV running in headless mode (Ctrl+C to stop)");
         loop {
             tokio::select! {
                 Some(alert) = alert_rx.recv() => {

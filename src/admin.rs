@@ -173,7 +173,7 @@ impl AdminSocket {
         let listener = UnixListener::bind(&self.socket_path)
             .with_context(|| format!("Failed to bind admin socket at {}", self.socket_path.display()))?;
 
-        // Set permissions: owner openclawav, group openclaw, mode 0660
+        // Set permissions: owner clawav, group openclaw, mode 0660
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -342,7 +342,7 @@ async fn process_request(
             };
             AdminResponse {
                 ok: true,
-                message: "OpenClawAV running".into(),
+                message: "ClawAV running".into(),
                 data: Some(serde_json::json!({
                     "status": "running",
                     "paused_seconds_remaining": paused,

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# OpenClawAV — AppArmor Profile Setup for OpenClaw Agent
+# ClawAV — AppArmor Profile Setup for OpenClaw Agent
 # Installs and enforces the AppArmor profile restricting the openclaw user.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROFILE_SRC="${SCRIPT_DIR}/../apparmor/usr.bin.openclaw"
 PROFILE_DST="/etc/apparmor.d/usr.bin.openclaw"
 
-echo "=== OpenClawAV AppArmor Setup ==="
+echo "=== ClawAV AppArmor Setup ==="
 
 # Check for root
 if [[ $EUID -ne 0 ]]; then

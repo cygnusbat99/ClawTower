@@ -1,6 +1,6 @@
 # Policy Writing Guide
 
-OpenClawAV has two policy systems:
+ClawAV has two policy systems:
 
 1. **Policy Engine** (`src/policy.rs`) — evaluates auditd events in real-time, generates alerts
 2. **clawsudo policies** (`src/bin/clawsudo.rs`) — gates privileged commands with allow/deny/ask enforcement
@@ -89,10 +89,10 @@ If `enforcement` is not set, clawsudo infers from `action`: `critical`/`block` �
 
 **Policy engine** loads from (both directories, merged):
 - `./policies/` (relative to working directory)
-- `/etc/openclawav/policies/` (system-installed)
+- `/etc/clawav/policies/` (system-installed)
 
 **clawsudo** loads from:
-- `/etc/openclawav/policies/`
+- `/etc/clawav/policies/`
 - `./policies/`
 
 ## Built-in Policy Files
@@ -117,7 +117,7 @@ These generate alerts but don't block anything:
 | `allow-apt` | apt, apt-get | allow |
 | `allow-docker` | docker, docker-compose | allow |
 | `allow-systemctl-openclaw` | systemctl restart openclaw, systemctl status | allow |
-| `deny-openclawav-tamper` | openclawav, /etc/openclawav, chattr, auditctl -e/-D | deny |
+| `deny-clawav-tamper` | clawav, /etc/clawav, chattr, auditctl -e/-D | deny |
 | `deny-firewall-disable` | ufw disable, iptables -F, nft flush | deny |
 | `deny-raw-shell` | bash, sh, zsh, dash | deny |
 | `deny-dangerous-rm` | rm -rf /etc, rm -rf /usr, rm -rf /var, rm -rf / | deny |

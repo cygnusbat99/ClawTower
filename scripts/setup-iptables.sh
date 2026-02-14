@@ -46,7 +46,7 @@ if [ "$FW_BACKEND" = "iptables" ]; then
 
 else
     # nftables backend
-    TABLE_NAME="openclawav"
+    TABLE_NAME="clawav"
     CHAIN_NAME="output_log"
 
     # Check if our table already exists

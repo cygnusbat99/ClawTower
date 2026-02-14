@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# OpenClawAV — Samhain FIM Setup for ARM64 (Raspberry Pi 5)
+# ClawAV — Samhain FIM Setup for ARM64 (Raspberry Pi 5)
 # Compiles Samhain from source and configures file integrity monitoring.
 
 SAMHAIN_VERSION="${SAMHAIN_VERSION:-4.5.2}"
@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SAMHAIN_CONFIG_SRC="${SCRIPT_DIR}/../configs/samhainrc"
 SAMHAIN_CONFIG_DST="/etc/samhainrc"
 
-echo "=== OpenClawAV Samhain FIM Setup ==="
+echo "=== ClawAV Samhain FIM Setup ==="
 echo "Architecture: $(uname -m)"
 
 # Check for root

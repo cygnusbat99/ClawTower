@@ -127,8 +127,8 @@ async fn handle(
 ) -> Result<Response<Body>, Infallible> {
     let resp = match req.uri().path() {
         "/" => {
-            let html = r#"<!DOCTYPE html><html><head><title>OpenClawAV</title></head><body>
-<h1>&#128737; OpenClawAV is running</h1>
+            let html = r#"<!DOCTYPE html><html><head><title>ClawAV</title></head><body>
+<h1>&#128737; ClawAV is running</h1>
 <ul>
 <li><a href="/api/status">/api/status</a> — System status</li>
 <li><a href="/api/alerts">/api/alerts</a> — Recent alerts</li>

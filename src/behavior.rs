@@ -84,8 +84,8 @@ const SECURITY_TAMPER_PATTERNS: &[&str] = &[
     "systemctl disable apparmor",
     "systemctl stop auditd",
     "systemctl disable auditd",
-    "systemctl stop openclawav",
-    "systemctl disable openclawav",
+    "systemctl stop clawav",
+    "systemctl disable clawav",
     "systemctl stop samhain",
     "systemctl disable samhain",
     "systemctl stop fail2ban",
@@ -201,7 +201,7 @@ pub fn classify_behavior(event: &ParsedEvent) -> Option<(BehaviorCategory, Sever
             for pattern in PRELOAD_BYPASS_PATTERNS {
                 if cmd.contains(pattern) {
                     // Don't flag our own legitimate preload operations
-                    if !cmd.contains("openclawav") && !cmd.contains("clawguard") {
+                    if !cmd.contains("clawav") && !cmd.contains("clawguard") {
                         return Some((BehaviorCategory::SecurityTamper, Severity::Critical));
                     }
                 }
