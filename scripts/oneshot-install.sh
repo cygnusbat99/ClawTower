@@ -149,15 +149,6 @@ chmod 755 /usr/local/bin/clawav /usr/local/bin/clawsudo
 # Install config (don't overwrite existing)
 if [[ ! -f /etc/clawav/config.toml ]]; then
     [[ -f "$TMPDIR/config.toml" ]] && cp "$TMPDIR/config.toml" /etc/clawav/config.toml
-    # Auto-detect the calling user (the human who ran sudo, not root)
-    CALLING_USER="${SUDO_USER:-}"
-    if [[ -n "$CALLING_USER" ]]; then
-        CALLING_UID=$(id -u "$CALLING_USER" 2>/dev/null || echo "")
-        if [[ -n "$CALLING_UID" ]]; then
-            log "Auto-detected user: $CALLING_USER (UID $CALLING_UID)"
-            sed -i "s/^watched_user = .*/watched_user = \"$CALLING_UID\"/" /etc/clawav/config.toml 2>/dev/null || true
-        fi
-    fi
 fi
 
 # Install policies (don't overwrite existing)
@@ -203,34 +194,96 @@ echo -e "${YELLOW}${BOLD}══════════════════�
 echo -e "${YELLOW}${BOLD}  ⚙️   CONFIGURATION                                           ${NC}"
 echo -e "${YELLOW}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
-echo -e "  Review your configuration before locking down."
-echo ""
-echo -e "  ${BOLD}watched_user${NC}        — Auto-detected from current user (change if needed)"
-echo -e "  ${BOLD}slack_webhook_url${NC}   — Optional: Slack webhook for independent alerts"
-echo ""
-echo -e "  Config file: ${BOLD}/etc/clawav/config.toml${NC}"
-echo ""
-
-# Auto-detect editor
-EDITOR_CMD=""
-for cmd in "${EDITOR:-}" nano vim vi; do
-    [[ -n "$cmd" ]] && command -v "$cmd" &>/dev/null && { EDITOR_CMD="$cmd"; break; }
-done
-[[ -z "$EDITOR_CMD" ]] && die "No text editor found. Install nano or vim."
-
-wait_for_enter "Press ENTER to open the config editor ($EDITOR_CMD)..."
-"$EDITOR_CMD" /etc/clawav/config.toml < /dev/tty > /dev/tty
-
-echo ""
-
-# Info about Slack (optional)
 CONF="/etc/clawav/config.toml"
-if grep -q 'webhook_url = "https://hooks.slack.com/...' "$CONF" 2>/dev/null || \
-   grep -q 'webhook_url = ""' "$CONF" 2>/dev/null; then
-    echo -e "${YELLOW}  ℹ️  Slack webhook not configured — alerts will go to logs only.${NC}"
-    echo -e "${YELLOW}     You can add a webhook later by editing /etc/clawav/config.toml${NC}"
-    echo ""
+
+# ── Watched User ──────────────────────────────────────────────────────────────
+CALLING_USER="${SUDO_USER:-$(whoami)}"
+CALLING_UID=$(id -u "$CALLING_USER" 2>/dev/null || echo "1000")
+echo ""
+echo -e "  ${BOLD}User to monitor:${NC} $CALLING_USER (UID $CALLING_UID)"
+echo -en "  ${CYAN}Monitor this user? [Y/n] or enter a different UID: ${NC}" > /dev/tty
+read -r user_input < /dev/tty
+if [[ -z "$user_input" || "$user_input" =~ ^[yY] ]]; then
+    WATCH_UID="$CALLING_UID"
+else
+    WATCH_UID="$user_input"
 fi
+sed -i "s/^watched_user = .*/watched_user = \"$WATCH_UID\"/" "$CONF"
+log "Watching UID: $WATCH_UID"
+
+# ── Additional Users ──────────────────────────────────────────────────────────
+echo ""
+echo -en "  ${CYAN}Monitor additional UIDs? (comma-separated, or ENTER to skip): ${NC}" > /dev/tty
+read -r extra_uids < /dev/tty
+if [[ -n "$extra_uids" ]]; then
+    # Build TOML array like ["1000", "1001"]
+    UIDS_TOML="[\"$WATCH_UID\""
+    IFS=',' read -ra EXTRA <<< "$extra_uids"
+    for uid in "${EXTRA[@]}"; do
+        uid=$(echo "$uid" | tr -d ' ')
+        [[ -n "$uid" ]] && UIDS_TOML+=", \"$uid\""
+    done
+    UIDS_TOML+="]"
+    sed -i "s/^.*watched_users = .*/watched_users = $UIDS_TOML/" "$CONF"
+    log "Watching UIDs: $UIDS_TOML"
+fi
+
+# ── Slack (Optional) ─────────────────────────────────────────────────────────
+echo ""
+echo -e "  ${BOLD}Slack Alerts${NC} (optional)"
+echo -e "  ClawAV can send alerts to an independent Slack webhook."
+echo -en "  ${CYAN}Slack webhook URL (or ENTER to skip): ${NC}" > /dev/tty
+read -r slack_url < /dev/tty
+if [[ -n "$slack_url" ]]; then
+    sed -i "s|^webhook_url = .*|webhook_url = \"$slack_url\"|" "$CONF"
+    sed -i "s/^enabled = false/enabled = true/" "$CONF"  # enable slack section
+    log "Slack alerts enabled"
+
+    echo -en "  ${CYAN}Slack channel (default: #devops): ${NC}" > /dev/tty
+    read -r slack_chan < /dev/tty
+    [[ -n "$slack_chan" ]] && sed -i "s|^channel = .*|channel = \"$slack_chan\"|" "$CONF"
+
+    echo -en "  ${CYAN}Backup webhook URL (or ENTER to skip): ${NC}" > /dev/tty
+    read -r slack_backup < /dev/tty
+    [[ -n "$slack_backup" ]] && sed -i "s|^backup_webhook_url = .*|backup_webhook_url = \"$slack_backup\"|" "$CONF"
+else
+    log "Slack alerts skipped — alerts go to logs only"
+fi
+
+# ── API ───────────────────────────────────────────────────────────────────────
+echo ""
+echo -e "  ${BOLD}JSON API${NC} (LAN-only status/alerts endpoint)"
+echo -en "  ${CYAN}Enable API on port 18791? [Y/n]: ${NC}" > /dev/tty
+read -r api_input < /dev/tty
+if [[ "$api_input" =~ ^[nN] ]]; then
+    sed -i '/^\[api\]/,/^$/s/^enabled = true/enabled = false/' "$CONF"
+    log "API disabled"
+else
+    log "API enabled on port 18791"
+fi
+
+# ── SecureClaw ────────────────────────────────────────────────────────────────
+echo ""
+echo -e "  ${BOLD}SecureClaw${NC} (prompt injection + supply chain detection patterns)"
+echo -en "  ${CYAN}Enable SecureClaw? [Y/n]: ${NC}" > /dev/tty
+read -r sc_input < /dev/tty
+if [[ "$sc_input" =~ ^[nN] ]]; then
+    log "SecureClaw disabled"
+else
+    sed -i '/^\[secureclaw\]/,/^$/s/^enabled = false/enabled = true/' "$CONF"
+    sed -i "s|^vendor_dir = .*|vendor_dir = \"/etc/clawav/secureclaw\"|" "$CONF"
+    log "SecureClaw enabled"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+echo ""
+echo -e "  ${GREEN}${BOLD}Configuration summary:${NC}"
+echo -e "  ${BOLD}Config file:${NC}    $CONF"
+echo -e "  ${BOLD}Watched user:${NC}   UID $WATCH_UID"
+[[ -n "$slack_url" ]] && echo -e "  ${BOLD}Slack:${NC}          Enabled" || echo -e "  ${BOLD}Slack:${NC}          Disabled (logs only)"
+echo ""
+echo -e "  ${YELLOW}You can always edit $CONF later (before locking down).${NC}"
+echo ""
 
 if ! confirm "Configuration done? Ready to lock down? [y/n]"; then
     echo ""
