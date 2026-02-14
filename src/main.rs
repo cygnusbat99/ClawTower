@@ -20,6 +20,7 @@ mod scanner;
 mod secureclaw;
 mod slack;
 mod tui;
+mod update;
 
 use anyhow::Result;
 use config::Config;
@@ -41,6 +42,7 @@ COMMANDS:
     run --headless       Start in headless mode (no TUI, log to stderr)
     status               Show service status and recent alerts
     configure            Interactive configuration wizard
+    update               Self-update to latest GitHub release
     scan                 Run a one-shot security scan and exit
     verify-audit [PATH]  Verify audit chain integrity
     setup                Install ClawAV as a system service
@@ -58,6 +60,8 @@ EXAMPLES:
     clawav run --headless            Run as background daemon
     clawav configure                 Set up Slack, watched users, etc.
     clawav scan                      Quick security scan
+    sudo clawav update               Self-update to latest release
+    clawav update --check            Check for updates without installing
     clawav setup --source --auto     Full unattended install from source
     clawav status                    Check if service is running
 
@@ -136,6 +140,9 @@ async fn main() -> Result<()> {
         "verify-audit" => {
             let path = args.get(2).map(|s| s.as_str());
             return audit_chain::run_verify_audit(path);
+        }
+        "update" => {
+            return update::run_update(&rest_args);
         }
         "configure" => {
             return run_script("configure.sh", &rest_args);
