@@ -22,6 +22,8 @@ pub struct Config {
     pub policy: PolicyConfig,
     #[serde(default)]
     pub secureclaw: SecureClawConfig,
+    #[serde(default)]
+    pub netpolicy: NetPolicyConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -194,6 +196,35 @@ pub struct DlpPattern {
     pub name: String,
     pub regex: String,
     pub action: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct NetPolicyConfig {
+    pub enabled: bool,
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+    #[serde(default)]
+    pub allowed_ports: Vec<u16>,
+    #[serde(default)]
+    pub blocked_hosts: Vec<String>,
+    #[serde(default = "default_netpolicy_mode")]
+    pub mode: String,
+}
+
+fn default_netpolicy_mode() -> String {
+    "blocklist".to_string()
+}
+
+impl Default for NetPolicyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allowed_hosts: Vec::new(),
+            allowed_ports: vec![80, 443, 53],
+            blocked_hosts: Vec::new(),
+            mode: "blocklist".to_string(),
+        }
+    }
 }
 
 impl Config {

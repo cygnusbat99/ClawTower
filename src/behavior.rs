@@ -756,4 +756,42 @@ mod tests {
         let result = classify_behavior(&event);
         assert_eq!(result, Some((BehaviorCategory::PrivilegeEscalation, Severity::Critical)));
     }
+
+    // --- Persistence Detection ---
+
+    #[test]
+    fn test_crontab_is_persistence() {
+        let event = make_exec_event(&["crontab", "-e"]);
+        let result = classify_behavior(&event);
+        assert_eq!(result, Some((BehaviorCategory::SecurityTamper, Severity::Critical)));
+    }
+
+    #[test]
+    fn test_at_is_persistence() {
+        let event = make_exec_event(&["at", "now", "+", "1", "hour"]);
+        let result = classify_behavior(&event);
+        assert_eq!(result, Some((BehaviorCategory::SecurityTamper, Severity::Critical)));
+    }
+
+    #[test]
+    fn test_systemctl_enable_is_persistence() {
+        let event = make_exec_event(&["systemctl", "enable", "evil-service"]);
+        let result = classify_behavior(&event);
+        assert_eq!(result, Some((BehaviorCategory::SecurityTamper, Severity::Warning)));
+    }
+
+    #[test]
+    fn test_write_cron_d() {
+        let event = make_syscall_event("openat", "/etc/cron.d/evil-job");
+        let result = classify_behavior(&event);
+        // Should match persistence path
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_write_systemd_service() {
+        let event = make_syscall_event("unlinkat", "/etc/systemd/system/evil.service");
+        let result = classify_behavior(&event);
+        assert_eq!(result, Some((BehaviorCategory::SecurityTamper, Severity::Critical)));
+    }
 }

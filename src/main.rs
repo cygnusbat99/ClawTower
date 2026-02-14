@@ -5,10 +5,13 @@ mod api;
 mod audit_chain;
 mod auditd;
 mod behavior;
+mod cognitive;
 mod config;
 mod falco;
 mod firewall;
 mod journald;
+mod logtamper;
+mod netpolicy;
 mod network;
 mod policy;
 mod proxy;
@@ -213,6 +216,15 @@ async fn main() -> Result<()> {
         let tx = raw_tx.clone();
         tokio::spawn(async move {
             firewall::monitor_firewall(tx).await;
+        });
+    }
+
+    // Spawn audit log tampering monitor
+    if config.auditd.enabled {
+        let tx = raw_tx.clone();
+        let log_path = PathBuf::from(&config.auditd.log_path);
+        tokio::spawn(async move {
+            crate::logtamper::monitor_log_integrity(log_path, tx, 30).await;
         });
     }
 

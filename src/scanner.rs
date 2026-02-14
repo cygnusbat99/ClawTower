@@ -6,6 +6,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::{sleep, Duration};
 
 use crate::alerts::{Alert, Severity};
+use crate::cognitive::scan_cognitive_integrity;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ScanStatus {
@@ -388,6 +389,11 @@ impl SecurityScanner {
             scan_resources(),
             scan_sidechannel_mitigations(),
             scan_secureclaw_sync(),
+            scan_cognitive_integrity(
+                std::path::Path::new("/home/openclaw/.openclaw/workspace"),
+                std::path::Path::new("/etc/openclawav/cognitive-baselines.sha256"),
+            ),
+            crate::logtamper::scan_audit_log_health(std::path::Path::new("/var/log/audit/audit.log")),
         ]
     }
 }
