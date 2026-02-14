@@ -19,9 +19,9 @@ const ADMIN_KEY_HASH_PATH: &str = "/etc/clawav/admin.key.hash";
 /// Detect the correct release asset name for this platform
 fn asset_name() -> &'static str {
     if cfg!(target_arch = "aarch64") {
-        "clawav-aarch64-unknown-linux-gnu"
+        "clawav-aarch64-linux"
     } else {
-        "clawav-x86_64-unknown-linux-gnu"
+        "clawav-x86_64-linux"
     }
 }
 

@@ -73,7 +73,7 @@ CONFIG:
 }
 
 fn print_version() {
-    eprintln!("ClawAV v0.1.0");
+    eprintln!("ClawAV v{}", env!("CARGO_PKG_VERSION"));
     eprintln!("Tamper-proof security watchdog for AI agents");
     eprintln!("https://github.com/coltzclaw/ClawAV");
 }
