@@ -6,54 +6,12 @@
 # enforcement: allow  → permit the command
 # enforcement: deny   → block the command
 # (no enforcement)    → detect only, don't block
+#
+# ORDER MATTERS: first match wins. Deny rules MUST come before allow rules
+# to prevent broad allow patterns from overriding specific deny patterns.
 
 rules:
-  # ── Allowed Commands ───────────────────────────────────────────────────────
-  - name: "allow-apt"
-    match:
-      command: ["apt", "apt-get", "dpkg"]
-    action: info
-    enforcement: allow
-
-  - name: "allow-docker"
-    match:
-      command: ["docker", "docker-compose"]
-    action: info
-    enforcement: allow
-
-  - name: "allow-systemctl"
-    description: "Allow service management"
-    match:
-      command: ["systemctl"]
-    action: info
-    enforcement: allow
-
-  - name: "allow-journalctl"
-    match:
-      command: ["journalctl"]
-    action: info
-    enforcement: allow
-
-  - name: "allow-ufw"
-    match:
-      command: ["ufw"]
-    action: info
-    enforcement: allow
-
-  - name: "allow-file-ops"
-    description: "Allow common file operations via sudo"
-    match:
-      command: ["cp", "mv", "mkdir", "chown", "chmod", "rm", "tee", "sed", "cat"]
-    action: info
-    enforcement: allow
-
-  - name: "allow-ip"
-    match:
-      command: ["ip"]
-    action: info
-    enforcement: allow
-
-  # ── Denied Commands ────────────────────────────────────────────────────────
+  # ── Denied Commands (checked FIRST) ────────────────────────────────────────
   - name: "deny-clawav-tamper"
     description: "Block modifications to ClawAV config and binaries"
     match:
@@ -102,8 +60,7 @@ rules:
     action: critical
     enforcement: deny
 
-  # ── Catch-all: deny raw shell via sudo ─────────────────────────────────────
-  # This ONLY applies to clawsudo (sudo proxy), NOT to normal bash execution.
+  # Catch-all: deny raw shell via sudo
   # Agents shouldn't need `sudo bash` — specific commands should be allowlisted above.
   - name: "deny-sudo-shell"
     description: "Block sudo to raw shell (use specific commands instead)"
@@ -111,3 +68,48 @@ rules:
       command: ["bash", "sh", "zsh", "dash"]
     action: critical
     enforcement: deny
+
+  # ── Allowed Commands (checked AFTER denies) ────────────────────────────────
+  - name: "allow-apt"
+    match:
+      command: ["apt", "apt-get", "dpkg"]
+    action: info
+    enforcement: allow
+
+  - name: "allow-docker"
+    match:
+      command: ["docker", "docker-compose"]
+    action: info
+    enforcement: allow
+
+  - name: "allow-systemctl"
+    description: "Allow service management"
+    match:
+      command: ["systemctl"]
+    action: info
+    enforcement: allow
+
+  - name: "allow-journalctl"
+    match:
+      command: ["journalctl"]
+    action: info
+    enforcement: allow
+
+  - name: "allow-ufw"
+    match:
+      command: ["ufw"]
+    action: info
+    enforcement: allow
+
+  - name: "allow-file-ops"
+    description: "Allow common file operations via sudo"
+    match:
+      command: ["cp", "mv", "mkdir", "chown", "chmod", "rm", "tee", "sed", "cat"]
+    action: info
+    enforcement: allow
+
+  - name: "allow-ip"
+    match:
+      command: ["ip"]
+    action: info
+    enforcement: allow

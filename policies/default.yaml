@@ -202,3 +202,251 @@ rules:
         - "mkfs."
         - "> /dev/sda"
     action: critical
+
+  # ── Encoding/Obfuscation Detection ─────────────────────────────────────────
+  - name: "detect-encoding-obfuscation"
+    description: "Flag use of encoding tools for potential data exfiltration"
+    match:
+      command_contains:
+        - "xxd"
+        - "od -x"
+        - "hexdump"
+        - "base64 | curl"
+        - "base64 | wget"
+        - "base32 | nc"
+    action: warning
+
+  # ── Suspicious File Extensions ─────────────────────────────────────────────
+  - name: "detect-suspicious-temp-files"
+    description: "Flag creation of suspicious binaries in temporary directories"
+    match:
+      file_access:
+        - "/tmp/*.elf"
+        - "/tmp/*.so"
+        - "/tmp/*.bin"
+        - "/tmp/*.exe"
+        - "/var/tmp/*.elf"
+        - "/var/tmp/*.so"
+    action: warning
+
+  # ── Large File Exfiltration ────────────────────────────────────────────────
+  - name: "detect-large-file-exfil"
+    description: "Flag compression/archiving of sensitive directories"
+    match:
+      command_contains:
+        - "tar -czf"
+        - "tar -cf"
+        - "zip -r /etc"
+        - "zip -r /var"
+        - "zip -r /home"
+        - "7z a /etc"
+        - "7z a /var"
+    action: warning
+
+  # ── AWS Credential Theft ───────────────────────────────────────────────────
+  - name: "detect-aws-credential-theft"
+    description: "Flag AWS credential enumeration from unexpected contexts"
+    match:
+      command_contains:
+        - "aws sts get-session-token"
+        - "aws sts assume-role"
+        - "aws configure get"
+        - "aws configure list"
+        - "cat ~/.aws/credentials"
+        - "cat ~/.aws/config"
+    action: warning
+
+  # ── Git Credential Exposure ────────────────────────────────────────────────
+  - name: "detect-git-credential-exposure"
+    description: "Flag potential git credential theft"
+    match:
+      command_contains:
+        - "git config credential"
+        - "git config user.token"
+        - "git config --global credential"
+        - "cat .git/config"
+        - "cat ~/.gitconfig"
+    action: warning
+
+  # ── Crontab Modification ───────────────────────────────────────────────────
+  - name: "detect-crontab-modification"
+    description: "Flag modifications to cron scheduling"
+    match:
+      command_contains:
+        - "crontab -e"
+        - "crontab -l"
+      file_access:
+        - "/etc/cron.d/*"
+        - "/etc/cron.daily/*"
+        - "/etc/cron.hourly/*"
+        - "/etc/cron.weekly/*"
+        - "/etc/cron.monthly/*"
+        - "/etc/crontab"
+        - "/var/spool/cron/*"
+    action: critical
+
+  # ── SSH Key Injection ──────────────────────────────────────────────────────
+  - name: "detect-ssh-key-injection"
+    description: "Flag attempts to inject SSH keys for persistence"
+    match:
+      file_access:
+        - "**/.ssh/authorized_keys"
+        - "/root/.ssh/authorized_keys"
+    action: critical
+
+  # ── History Tampering ──────────────────────────────────────────────────────
+  - name: "detect-history-tampering"
+    description: "Flag attempts to clear or modify command history"
+    match:
+      command_contains:
+        - "rm .bash_history"
+        - "rm .zsh_history"
+        - "> .bash_history"
+        - "> .zsh_history"
+        - "unset HISTFILE"
+        - "HISTSIZE=0"
+        - "HISTFILESIZE=0"
+      file_access:
+        - "**/.bash_history"
+        - "**/.zsh_history"
+    action: critical
+
+  # ── Process Injection ──────────────────────────────────────────────────────
+  - name: "detect-process-injection"
+    description: "Flag ptrace and memory manipulation for process injection"
+    match:
+      command_contains:
+        - "ptrace"
+        - "gdb attach"
+        - "gdb -p"
+        - "/proc/*/mem"
+        - "PTRACE_ATTACH"
+        - "strace -p"
+    action: critical
+
+  # ── Timestomping ───────────────────────────────────────────────────────────
+  - name: "detect-timestomping"
+    description: "Flag attempts to modify file timestamps"
+    match:
+      command_contains:
+        - "touch -t"
+        - "touch --date"
+        - "touch -d"
+        - "touch -r"
+    action: warning
+
+  # ── Log Clearing ───────────────────────────────────────────────────────────
+  - name: "detect-log-clearing"
+    description: "Flag attempts to clear system logs"
+    match:
+      command_contains:
+        - "> /var/log/syslog"
+        - "> /var/log/auth.log"
+        - "> /var/log/audit/audit.log"
+        - "rm /var/log/"
+        - "truncate /var/log/"
+        - "journalctl --vacuum"
+        - "journalctl --rotate"
+    action: critical
+
+  # ── Binary Replacement ─────────────────────────────────────────────────────
+  - name: "detect-binary-replacement"
+    description: "Flag overwriting of system binaries"
+    match:
+      file_access:
+        - "/usr/bin/*"
+        - "/usr/sbin/*" 
+        - "/bin/*"
+        - "/sbin/*"
+    action: critical
+
+  # ── Kernel Parameter Changes ───────────────────────────────────────────────
+  - name: "detect-kernel-param-changes"
+    description: "Flag runtime kernel parameter modifications"
+    match:
+      command_contains:
+        - "sysctl -w"
+        - "echo > /proc/sys/"
+      file_access:
+        - "/proc/sys/kernel/*"
+        - "/proc/sys/net/*"
+    action: warning
+
+  # ── Service Creation ───────────────────────────────────────────────────────
+  - name: "detect-service-creation"
+    description: "Flag creation of new system services"
+    match:
+      command_contains:
+        - "systemctl enable"
+        - "update-rc.d"
+        - "chkconfig"
+      file_access:
+        - "/etc/systemd/system/*"
+        - "/usr/lib/systemd/system/*"
+        - "/etc/init.d/*"
+    action: warning
+
+  # ── Network Tunnel Creation ────────────────────────────────────────────────
+  - name: "detect-network-tunnels"
+    description: "Flag creation of network tunnels for C2"
+    match:
+      command_contains:
+        - "ssh -R"
+        - "ssh -L"
+        - "ssh -D"
+        - "chisel"
+        - "ngrok"
+        - "socat"
+        - "proxytunnel"
+        - "stunnel"
+    action: critical
+
+  # ── Package Manager Abuse ──────────────────────────────────────────────────
+  - name: "detect-package-manager-abuse"
+    description: "Flag suspicious package installations"
+    match:
+      command_contains:
+        - "pip install git+"
+        - "pip install http://"
+        - "npm install git+"
+        - "npm install http://"
+        - "gem install --source http://"
+        - "go get"
+        - "cargo install --git"
+    action: warning
+
+  # ── Compiler Invocation ───────────────────────────────────────────────────
+  - name: "detect-compilation"
+    description: "Flag compilation activity (potential exploit building)"
+    match:
+      command: ["gcc", "g++", "clang", "cc", "make", "cmake", "rustc"]
+      command_contains:
+        - "gcc"
+        - "g++"
+        - "clang"
+        - "make"
+        - "go build"
+    action: info
+
+  # ── Memory Dump Tools ──────────────────────────────────────────────────────
+  - name: "detect-memory-dump"
+    description: "Flag memory dumping and analysis tools"
+    match:
+      command_contains:
+        - "gdb attach"
+        - "/proc/kcore"
+        - "dd if=/proc/kcore"
+        - "volatility"
+        - "memdump"
+        - "lldb -p"
+    action: critical
+
+  # ── Scheduled Task Manipulation ────────────────────────────────────────────
+  - name: "detect-scheduled-tasks"
+    description: "Flag manipulation of scheduled tasks"
+    match:
+      command: ["at", "atq", "atrm", "batch"]
+      command_contains:
+        - "at "
+        - "batch"
+    action: warning

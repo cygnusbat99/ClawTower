@@ -95,6 +95,837 @@ fn run_cmd_with_sudo(cmd: &str, args: &[&str]) -> Result<String, String> {
 
 // --- Individual scan functions ---
 
+pub fn scan_crontab_audit() -> ScanResult {
+    let mut issues = Vec::new();
+
+    // Check user crontabs
+    match run_cmd("bash", &["-c", "for u in $(cut -d: -f1 /etc/passwd); do crontab -l -u $u 2>/dev/null | grep -v '^#' | grep -v '^$' && echo \"User: $u\"; done"]) {
+        Ok(output) => {
+            if !output.trim().is_empty() {
+                let lines: Vec<&str> = output.lines().collect();
+                for line in lines {
+                    if line.contains("wget") || line.contains("curl") || line.contains("nc") || 
+                       line.contains("/dev/tcp") || line.contains("python -c") || line.contains("base64") {
+                        issues.push(format!("Suspicious cron job: {}", line.trim()));
+                    }
+                }
+            }
+        }
+        Err(_) => {} // Normal if no user crontabs
+    }
+
+    // Check system crontabs
+    let system_cron_dirs = ["/etc/cron.d", "/etc/cron.daily", "/etc/cron.hourly", "/etc/cron.weekly", "/etc/cron.monthly"];
+    for dir in &system_cron_dirs {
+        if let Ok(output) = run_cmd("find", &[dir, "-type", "f", "-exec", "grep", "-l", "-E", "(wget|curl|nc|python -c|base64|/dev/tcp)", "{}", ";"]) {
+            if !output.trim().is_empty() {
+                for file in output.lines() {
+                    issues.push(format!("Suspicious system cron file: {}", file));
+                }
+            }
+        }
+    }
+
+    // Check /etc/crontab
+    if let Ok(output) = run_cmd("grep", &["-v", "^#", "/etc/crontab"]) {
+        for line in output.lines() {
+            if line.contains("wget") || line.contains("curl") || line.contains("nc") {
+                issues.push(format!("Suspicious /etc/crontab entry: {}", line.trim()));
+            }
+        }
+    }
+
+    if issues.is_empty() {
+        ScanResult::new("crontab_audit", ScanStatus::Pass, "No suspicious cron jobs detected")
+    } else {
+        ScanResult::new("crontab_audit", ScanStatus::Fail, &format!("Found {} suspicious cron entries: {}", issues.len(), issues.join("; ")))
+    }
+}
+
+pub fn scan_world_writable_files() -> ScanResult {
+    let sensitive_dirs = ["/etc", "/usr/bin", "/usr/sbin", "/bin", "/sbin", "/var/log"];
+    let mut issues = Vec::new();
+
+    for dir in &sensitive_dirs {
+        match run_cmd("find", &[dir, "-type", "f", "-perm", "0002", "2>/dev/null"]) {
+            Ok(output) => {
+                for file in output.lines() {
+                    if !file.trim().is_empty() {
+                        issues.push(file.trim().to_string());
+                    }
+                }
+            }
+            Err(_) => {} // Directory might not exist or permission denied
+        }
+    }
+
+    if issues.is_empty() {
+        ScanResult::new("world_writable", ScanStatus::Pass, "No world-writable files in sensitive directories")
+    } else if issues.len() > 10 {
+        ScanResult::new("world_writable", ScanStatus::Fail, &format!("Found {} world-writable files in sensitive dirs", issues.len()))
+    } else {
+        ScanResult::new("world_writable", ScanStatus::Warn, &format!("Found {} world-writable files: {}", issues.len(), issues.join(", ")))
+    }
+}
+
+pub fn scan_suid_sgid_binaries() -> ScanResult {
+    let mut suid_files = Vec::new();
+    let mut sgid_files = Vec::new();
+
+    // Find SUID files
+    if let Ok(output) = run_cmd("find", &["/", "-type", "f", "-perm", "-4000", "2>/dev/null"]) {
+        for file in output.lines() {
+            if !file.trim().is_empty() {
+                suid_files.push(file.trim().to_string());
+            }
+        }
+    }
+
+    // Find SGID files  
+    if let Ok(output) = run_cmd("find", &["/", "-type", "f", "-perm", "-2000", "2>/dev/null"]) {
+        for file in output.lines() {
+            if !file.trim().is_empty() {
+                sgid_files.push(file.trim().to_string());
+            }
+        }
+    }
+
+    // Known safe SUID binaries (common on most systems)
+    let known_safe_suid = [
+        "/usr/bin/sudo", "/usr/bin/su", "/usr/bin/passwd", "/usr/bin/chsh", "/usr/bin/chfn",
+        "/usr/bin/gpasswd", "/usr/bin/newgrp", "/usr/bin/mount", "/usr/bin/umount",
+        "/usr/bin/ping", "/usr/bin/ping6", "/usr/lib/openssh/ssh-keysign",
+        "/usr/lib/dbus-1.0/dbus-daemon-launch-helper", "/usr/sbin/pppd"
+    ];
+
+    let suspicious_suid: Vec<&String> = suid_files.iter()
+        .filter(|f| !known_safe_suid.iter().any(|safe| f.contains(safe)))
+        .collect();
+
+    let total_findings = suid_files.len() + sgid_files.len();
+    let suspicious_count = suspicious_suid.len();
+
+    if suspicious_count > 0 {
+        ScanResult::new("suid_sgid", ScanStatus::Warn, &format!("Found {} SUID/SGID files, {} potentially suspicious: {}", 
+            total_findings, suspicious_count, suspicious_suid.iter().take(3).map(|s| s.as_str()).collect::<Vec<_>>().join(", ")))
+    } else {
+        ScanResult::new("suid_sgid", ScanStatus::Pass, &format!("Found {} SUID/SGID files, all appear legitimate", total_findings))
+    }
+}
+
+pub fn scan_kernel_modules() -> ScanResult {
+    match run_cmd("lsmod", &[]) {
+        Ok(output) => {
+            let lines: Vec<&str> = output.lines().collect();
+            let module_count = lines.len().saturating_sub(1); // Subtract header
+
+            // Check for suspicious module names
+            let suspicious_patterns = ["rootkit", "evil", "backdoor", "stealth", "hidden", "keylog"];
+            let mut suspicious_modules = Vec::new();
+
+            for line in lines.iter().skip(1) { // Skip header
+                let module_name = line.split_whitespace().next().unwrap_or("");
+                for pattern in &suspicious_patterns {
+                    if module_name.to_lowercase().contains(pattern) {
+                        suspicious_modules.push(module_name);
+                        break;
+                    }
+                }
+            }
+
+            if !suspicious_modules.is_empty() {
+                ScanResult::new("kernel_modules", ScanStatus::Fail, &format!("Found {} suspicious kernel modules: {}", 
+                    suspicious_modules.len(), suspicious_modules.join(", ")))
+            } else if module_count > 100 {
+                ScanResult::new("kernel_modules", ScanStatus::Warn, &format!("High number of loaded modules: {}", module_count))
+            } else {
+                ScanResult::new("kernel_modules", ScanStatus::Pass, &format!("{} kernel modules loaded", module_count))
+            }
+        }
+        Err(e) => ScanResult::new("kernel_modules", ScanStatus::Warn, &format!("Cannot check kernel modules: {}", e)),
+    }
+}
+
+pub fn scan_docker_security() -> ScanResult {
+    // First check if Docker is running
+    match run_cmd("systemctl", &["is-active", "docker"]) {
+        Ok(status) if status.trim() == "active" => {
+            let mut issues = Vec::new();
+
+            // Check for privileged containers
+            if let Ok(output) = run_cmd("docker", &["ps", "--format", "table {{.Names}}\t{{.Status}}", "--filter", "status=running"]) {
+                for line in output.lines().skip(1) { // Skip header
+                    if let Some(container_name) = line.split('\t').next() {
+                        if let Ok(inspect) = run_cmd("docker", &["inspect", container_name, "--format", "{{.HostConfig.Privileged}}"]) {
+                            if inspect.trim() == "true" {
+                                issues.push(format!("Privileged container: {}", container_name));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Check if Docker socket is exposed
+            if std::path::Path::new("/var/run/docker.sock").exists() {
+                match run_cmd("ls", &["-la", "/var/run/docker.sock"]) {
+                    Ok(output) => {
+                        if output.contains("rw-rw-rw-") || output.contains("666") {
+                            issues.push("Docker socket is world-writable".to_string());
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+
+            // Check for containers with host network
+            if let Ok(output) = run_cmd("docker", &["ps", "-q"]) {
+                for container_id in output.lines() {
+                    if let Ok(network) = run_cmd("docker", &["inspect", container_id.trim(), "--format", "{{.HostConfig.NetworkMode}}"]) {
+                        if network.trim() == "host" {
+                            issues.push(format!("Container using host network: {}", container_id.trim()));
+                        }
+                    }
+                }
+            }
+
+            if issues.is_empty() {
+                ScanResult::new("docker_security", ScanStatus::Pass, "Docker security checks passed")
+            } else {
+                ScanResult::new("docker_security", ScanStatus::Warn, &format!("Docker security issues: {}", issues.join("; ")))
+            }
+        }
+        Ok(_) | Err(_) => ScanResult::new("docker_security", ScanStatus::Pass, "Docker not running"),
+    }
+}
+
+pub fn scan_password_policy() -> ScanResult {
+    let mut issues = Vec::new();
+
+    // Check /etc/login.defs
+    if let Ok(content) = std::fs::read_to_string("/etc/login.defs") {
+        let mut pass_max_days = None;
+        let mut pass_min_days = None;
+        let mut pass_warn_age = None;
+        
+        for line in content.lines() {
+            if line.starts_with("PASS_MAX_DAYS") {
+                if let Some(value) = line.split_whitespace().nth(1) {
+                    if let Ok(days) = value.parse::<u32>() {
+                        pass_max_days = Some(days);
+                        if days > 90 || days == 99999 {
+                            issues.push(format!("Password expiry too long: {} days", days));
+                        }
+                    }
+                }
+            } else if line.starts_with("PASS_MIN_DAYS") {
+                if let Some(value) = line.split_whitespace().nth(1) {
+                    if let Ok(days) = value.parse::<u32>() {
+                        pass_min_days = Some(days);
+                    }
+                }
+            } else if line.starts_with("PASS_WARN_AGE") {
+                if let Some(value) = line.split_whitespace().nth(1) {
+                    if let Ok(days) = value.parse::<u32>() {
+                        pass_warn_age = Some(days);
+                    }
+                }
+            }
+        }
+
+        if pass_max_days.is_none() {
+            issues.push("PASS_MAX_DAYS not configured".to_string());
+        }
+    } else {
+        issues.push("Cannot read /etc/login.defs".to_string());
+    }
+
+    // Check PAM password requirements
+    if let Ok(content) = std::fs::read_to_string("/etc/pam.d/common-password") {
+        if !content.contains("pam_pwquality") && !content.contains("pam_cracklib") {
+            issues.push("No password quality checking configured".to_string());
+        }
+    }
+
+    if issues.is_empty() {
+        ScanResult::new("password_policy", ScanStatus::Pass, "Password policy configured appropriately")
+    } else {
+        ScanResult::new("password_policy", ScanStatus::Warn, &format!("Password policy issues: {}", issues.join("; ")))
+    }
+}
+
+pub fn scan_open_file_descriptors() -> ScanResult {
+    let mut issues = Vec::new();
+
+    // Check system-wide open files
+    if let Ok(output) = run_cmd("lsof", &["-n", "|", "wc", "-l"]) {
+        if let Ok(count) = output.trim().parse::<u32>() {
+            if count > 10000 {
+                issues.push(format!("High number of open files: {}", count));
+            }
+        }
+    }
+
+    // Check for suspicious open network connections
+    if let Ok(output) = run_cmd("lsof", &["-i", "-n"]) {
+        for line in output.lines() {
+            if line.contains("ESTABLISHED") && (line.contains(":6667") || line.contains(":6697") || 
+               line.contains(":4444") || line.contains(":1234")) {
+                issues.push(format!("Suspicious network connection: {}", line.trim()));
+            }
+        }
+    }
+
+    // Check processes with many open files
+    if let Ok(output) = run_cmd("bash", &["-c", "for pid in /proc/*/fd; do echo \"$(ls $pid 2>/dev/null | wc -l) $pid\"; done | sort -n | tail -5"]) {
+        for line in output.lines() {
+            if let Some(count_str) = line.split_whitespace().next() {
+                if let Ok(count) = count_str.parse::<u32>() {
+                    if count > 1000 {
+                        issues.push(format!("Process with many open FDs: {}", line.trim()));
+                    }
+                }
+            }
+        }
+    }
+
+    if issues.is_empty() {
+        ScanResult::new("open_fds", ScanStatus::Pass, "File descriptor usage normal")
+    } else {
+        ScanResult::new("open_fds", ScanStatus::Warn, &format!("FD issues: {}", issues.join("; ")))
+    }
+}
+
+pub fn scan_dns_resolver() -> ScanResult {
+    match std::fs::read_to_string("/etc/resolv.conf") {
+        Ok(content) => {
+            let mut nameservers = Vec::new();
+            let mut suspicious_entries = Vec::new();
+
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with("nameserver") {
+                    if let Some(ip) = line.split_whitespace().nth(1) {
+                        nameservers.push(ip.to_string());
+                        
+                        // Check for suspicious DNS servers
+                        let suspicious_dns = ["8.8.4.4", "1.1.1.1"]; // Actually these are fine, but flagging non-standard
+                        if !ip.starts_with("127.") && !ip.starts_with("192.168.") && 
+                           !ip.starts_with("10.") && !ip.starts_with("172.") &&
+                           !suspicious_dns.contains(&ip) && ip != "8.8.8.8" && ip != "1.0.0.1" {
+                            suspicious_entries.push(format!("Unusual DNS server: {}", ip));
+                        }
+                    }
+                }
+                
+                // Check for DNS hijacking indicators
+                if line.contains("search ") && (line.contains(".local") || line.contains("attacker")) {
+                    suspicious_entries.push(format!("Suspicious search domain: {}", line));
+                }
+            }
+
+            if nameservers.is_empty() {
+                ScanResult::new("dns_resolver", ScanStatus::Fail, "No nameservers configured")
+            } else if !suspicious_entries.is_empty() {
+                ScanResult::new("dns_resolver", ScanStatus::Warn, &format!("DNS concerns: {}", suspicious_entries.join("; ")))
+            } else {
+                ScanResult::new("dns_resolver", ScanStatus::Pass, &format!("DNS resolvers configured: {}", nameservers.join(", ")))
+            }
+        }
+        Err(e) => ScanResult::new("dns_resolver", ScanStatus::Fail, &format!("Cannot read /etc/resolv.conf: {}", e)),
+    }
+}
+
+pub fn scan_ntp_sync() -> ScanResult {
+    // Try timedatectl first (systemd)
+    if let Ok(output) = run_cmd("timedatectl", &["show", "--property=NTPSynchronized,NTP"]) {
+        let ntp_sync = output.lines().any(|l| l.starts_with("NTPSynchronized=yes"));
+        let ntp_enabled = output.lines().any(|l| l.starts_with("NTP=yes"));
+
+        if ntp_sync && ntp_enabled {
+            ScanResult::new("ntp_sync", ScanStatus::Pass, "NTP synchronized and enabled")
+        } else if ntp_enabled {
+            ScanResult::new("ntp_sync", ScanStatus::Warn, "NTP enabled but not synchronized")
+        } else {
+            ScanResult::new("ntp_sync", ScanStatus::Warn, "NTP not enabled")
+        }
+    }
+    // Fall back to checking ntpd/chronyd services
+    else if let Ok(status) = run_cmd("systemctl", &["is-active", "ntp"]) {
+        if status.trim() == "active" {
+            ScanResult::new("ntp_sync", ScanStatus::Pass, "NTP service active")
+        } else {
+            ScanResult::new("ntp_sync", ScanStatus::Warn, "NTP service not active")
+        }
+    } else if let Ok(status) = run_cmd("systemctl", &["is-active", "chronyd"]) {
+        if status.trim() == "active" {
+            ScanResult::new("ntp_sync", ScanStatus::Pass, "Chrony service active")
+        } else {
+            ScanResult::new("ntp_sync", ScanStatus::Warn, "No NTP service detected")
+        }
+    } else {
+        ScanResult::new("ntp_sync", ScanStatus::Warn, "Cannot determine NTP status")
+    }
+}
+
+pub fn scan_failed_login_attempts() -> ScanResult {
+    let mut issues = Vec::new();
+
+    // Check journalctl for failed SSH attempts
+    if let Ok(output) = run_cmd("journalctl", &["--since", "24 hours ago", "-u", "ssh", "--grep", "Failed password"]) {
+        let failed_attempts = output.lines().count();
+        if failed_attempts > 50 {
+            issues.push(format!("High SSH failed logins in 24h: {}", failed_attempts));
+        } else if failed_attempts > 10 {
+            issues.push(format!("Moderate SSH failed logins in 24h: {}", failed_attempts));
+        }
+    }
+
+    // Check auth.log if it exists
+    if let Ok(output) = run_cmd("grep", &["-c", "Failed password", "/var/log/auth.log"]) {
+        if let Ok(count) = output.trim().parse::<u32>() {
+            if count > 100 {
+                issues.push(format!("High auth failures in auth.log: {}", count));
+            }
+        }
+    }
+
+    // Check for successful logins after many failures (potential brute force success)
+    if let Ok(output) = run_cmd("journalctl", &["--since", "1 hour ago", "--grep", "Accepted password"]) {
+        let successful_logins = output.lines().count();
+        if successful_logins > 0 && issues.iter().any(|i| i.contains("failed logins")) {
+            issues.push(format!("Successful logins after failures detected: {}", successful_logins));
+        }
+    }
+
+    if issues.is_empty() {
+        ScanResult::new("failed_logins", ScanStatus::Pass, "No excessive failed login attempts")
+    } else {
+        ScanResult::new("failed_logins", ScanStatus::Warn, &format!("Login attempt issues: {}", issues.join("; ")))
+    }
+}
+
+pub fn scan_zombie_processes() -> ScanResult {
+    match run_cmd("ps", &["aux"]) {
+        Ok(output) => {
+            let mut zombies = Vec::new();
+            let mut high_cpu_procs = Vec::new();
+
+            for line in output.lines().skip(1) { // Skip header
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                if fields.len() >= 11 {
+                    let cpu = fields.get(2).map_or("0", |v| v);
+                    let stat = fields.get(7).map_or("", |v| v);
+                    let command = fields.get(10).map_or("", |v| v);
+
+                    // Check for zombie processes
+                    if stat.contains('Z') {
+                        zombies.push(command.to_string());
+                    }
+
+                    // Check for processes consuming high CPU
+                    if let Ok(cpu_val) = cpu.parse::<f32>() {
+                        if cpu_val > 80.0 {
+                            high_cpu_procs.push(format!("{} ({}%)", command, cpu));
+                        }
+                    }
+                }
+            }
+
+            let mut issues = Vec::new();
+            if !zombies.is_empty() {
+                issues.push(format!("Zombie processes: {}", zombies.join(", ")));
+            }
+            if !high_cpu_procs.is_empty() {
+                issues.push(format!("High CPU processes: {}", high_cpu_procs.join(", ")));
+            }
+
+            if issues.is_empty() {
+                ScanResult::new("process_health", ScanStatus::Pass, "No zombie or suspicious processes")
+            } else {
+                ScanResult::new("process_health", ScanStatus::Warn, &format!("Process issues: {}", issues.join("; ")))
+            }
+        }
+        Err(e) => ScanResult::new("process_health", ScanStatus::Warn, &format!("Cannot check processes: {}", e)),
+    }
+}
+
+pub fn scan_swap_tmpfs_security() -> ScanResult {
+    let mut issues = Vec::new();
+
+    // Check swap encryption
+    if let Ok(output) = run_cmd("swapon", &["--show"]) {
+        if !output.trim().is_empty() {
+            // Swap is enabled, check if encrypted
+            if let Ok(cryptsetup_output) = run_cmd("bash", &["-c", "dmsetup table | grep crypt"]) {
+                if cryptsetup_output.trim().is_empty() {
+                    issues.push("Swap not encrypted".to_string());
+                }
+            } else {
+                issues.push("Swap encryption unknown".to_string());
+            }
+        }
+    }
+
+    // Check tmp mount options
+    if let Ok(output) = run_cmd("mount", &[]) {
+        let mut tmp_found = false;
+        for line in output.lines() {
+            if line.contains(" /tmp ") {
+                tmp_found = true;
+                if !line.contains("noexec") {
+                    issues.push("/tmp not mounted with noexec".to_string());
+                }
+                if !line.contains("nosuid") {
+                    issues.push("/tmp not mounted with nosuid".to_string());
+                }
+                if !line.contains("nodev") {
+                    issues.push("/tmp not mounted with nodev".to_string());
+                }
+            }
+        }
+        if !tmp_found {
+            issues.push("/tmp not separately mounted".to_string());
+        }
+    }
+
+    // Check /dev/shm security
+    if let Ok(output) = run_cmd("mount", &[]) {
+        for line in output.lines() {
+            if line.contains(" /dev/shm ") {
+                if !line.contains("noexec") {
+                    issues.push("/dev/shm allows execution".to_string());
+                }
+            }
+        }
+    }
+
+    if issues.is_empty() {
+        ScanResult::new("swap_tmpfs", ScanStatus::Pass, "Swap and temporary filesystem security good")
+    } else {
+        ScanResult::new("swap_tmpfs", ScanStatus::Warn, &format!("Swap/tmpfs issues: {}", issues.join("; ")))
+    }
+}
+
+pub fn scan_environment_variables() -> ScanResult {
+    let mut issues = Vec::new();
+
+    // Check current environment for suspicious variables
+    for (key, value) in std::env::vars() {
+        if key == "LD_PRELOAD" && !value.contains("clawguard") {
+            issues.push(format!("Suspicious LD_PRELOAD: {}", value));
+        }
+        if key == "LD_LIBRARY_PATH" && value.contains("/tmp") {
+            issues.push("LD_LIBRARY_PATH includes /tmp".to_string());
+        }
+        if key.contains("PROXY") && (value.contains("tor") || value.contains("socks")) {
+            issues.push(format!("Proxy configuration detected: {}={}", key, value));
+        }
+        if key.contains("DEBUG") && value == "1" {
+            issues.push(format!("Debug mode enabled: {}", key));
+        }
+        // Check for encoded credentials in env
+        if key.contains("KEY") || key.contains("SECRET") || key.contains("TOKEN") {
+            if value.len() > 20 && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '=' || c == '+' || c == '/') {
+                issues.push(format!("Potential credential in environment: {}", key));
+            }
+        }
+    }
+
+    // Check OpenClaw agent environment specifically
+    if let Ok(openclaw_pid) = run_cmd("pgrep", &["openclaw"]) {
+        if let Ok(env_content) = std::fs::read_to_string(format!("/proc/{}/environ", openclaw_pid.trim())) {
+            let env_vars: Vec<&str> = env_content.split('\0').collect();
+            for var in env_vars {
+                if var.starts_with("AWS_SECRET_ACCESS_KEY=") || var.starts_with("ANTHROPIC_API_KEY=") {
+                    issues.push("Credentials found in agent environment".to_string());
+                }
+            }
+        }
+    }
+
+    if issues.is_empty() {
+        ScanResult::new("environment_vars", ScanStatus::Pass, "Environment variables secure")
+    } else {
+        ScanResult::new("environment_vars", ScanStatus::Warn, &format!("Environment issues: {}", issues.join("; ")))
+    }
+}
+
+pub fn scan_package_integrity() -> ScanResult {
+    let mut issues = Vec::new();
+
+    // Check dpkg/apt package integrity (Debian/Ubuntu)
+    if let Ok(output) = run_cmd("which", &["dpkg"]) {
+        if !output.trim().is_empty() {
+            if let Ok(verify_output) = run_cmd("dpkg", &["--verify"]) {
+                for line in verify_output.lines() {
+                    if line.trim().len() > 1 { // dpkg --verify outputs modified files
+                        issues.push(format!("Modified package file: {}", line.trim()));
+                    }
+                }
+            }
+        }
+    }
+    // Check rpm package integrity (Red Hat/CentOS)
+    else if let Ok(output) = run_cmd("which", &["rpm"]) {
+        if !output.trim().is_empty() {
+            if let Ok(verify_output) = run_cmd("rpm", &["-Va"]) {
+                for line in verify_output.lines() {
+                    if line.contains("missing") || line.contains("changed") {
+                        issues.push(format!("Modified RPM: {}", line.trim()));
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for unsigned packages
+    if let Ok(output) = run_cmd("apt", &["list", "--installed"]) {
+        let installed_count = output.lines().count().saturating_sub(1); // Subtract header
+        if installed_count > 2000 {
+            issues.push(format!("High number of packages installed: {}", installed_count));
+        }
+    }
+
+    if issues.len() > 10 {
+        ScanResult::new("package_integrity", ScanStatus::Warn, &format!("Many package integrity issues: {} problems", issues.len()))
+    } else if !issues.is_empty() {
+        ScanResult::new("package_integrity", ScanStatus::Warn, &format!("Package issues: {}", issues.iter().take(3).cloned().collect::<Vec<_>>().join("; ")))
+    } else {
+        ScanResult::new("package_integrity", ScanStatus::Pass, "Package integrity verified")
+    }
+}
+
+pub fn scan_core_dump_settings() -> ScanResult {
+    let mut issues = Vec::new();
+
+    // Check systemd coredump settings
+    if let Ok(output) = run_cmd("systemctl", &["is-enabled", "systemd-coredump"]) {
+        if output.trim() == "enabled" {
+            issues.push("Core dumps are enabled system-wide".to_string());
+        }
+    }
+
+    // Check ulimit core dump settings
+    if let Ok(output) = run_cmd("ulimit", &["-c"]) {
+        if output.trim() != "0" && output.trim() != "unlimited" {
+            if output.trim().parse::<u64>().unwrap_or(0) > 0 {
+                issues.push(format!("Core dumps allowed: ulimit -c = {}", output.trim()));
+            }
+        }
+    }
+
+    // Check /proc/sys/kernel/core_pattern
+    if let Ok(pattern) = std::fs::read_to_string("/proc/sys/kernel/core_pattern") {
+        let pattern = pattern.trim();
+        if !pattern.starts_with("|/bin/false") && pattern != "core" {
+            if pattern.contains("/") && !pattern.contains("/dev/null") {
+                issues.push(format!("Core dumps directed to: {}", pattern));
+            }
+        }
+    }
+
+    // Check coredumpctl for recent dumps
+    if let Ok(output) = run_cmd("coredumpctl", &["--since", "1 week ago", "--no-pager"]) {
+        let dump_count = output.lines().filter(|l| l.contains("COREDUMP")).count();
+        if dump_count > 0 {
+            issues.push(format!("Recent core dumps found: {}", dump_count));
+        }
+    }
+
+    if issues.is_empty() {
+        ScanResult::new("core_dumps", ScanStatus::Pass, "Core dumps properly disabled")
+    } else {
+        ScanResult::new("core_dumps", ScanStatus::Warn, &format!("Core dump concerns: {}", issues.join("; ")))
+    }
+}
+
+pub fn scan_network_interfaces() -> ScanResult {
+    let mut issues = Vec::new();
+
+    // Check for promiscuous mode interfaces (sniffing)
+    if let Ok(output) = run_cmd("ip", &["link", "show"]) {
+        for line in output.lines() {
+            if line.contains("PROMISC") {
+                let interface = line.split(':').nth(1).unwrap_or("unknown").trim();
+                issues.push(format!("Interface in promiscuous mode: {}", interface));
+            }
+        }
+    }
+
+    // Check for unusual network interfaces
+    if let Ok(output) = run_cmd("ip", &["addr", "show"]) {
+        let mut interface_count = 0;
+        for line in output.lines() {
+            if line.starts_with(char::is_numeric) && line.contains(":") {
+                interface_count += 1;
+                // Look for suspicious interface names
+                if line.contains("tun") && !line.contains("tailscale") {
+                    issues.push("Tunnel interface detected".to_string());
+                }
+                if line.contains("tap") {
+                    issues.push("TAP interface detected".to_string());
+                }
+            }
+        }
+        
+        if interface_count > 10 {
+            issues.push(format!("Many network interfaces: {}", interface_count));
+        }
+    }
+
+    // Check for IP forwarding enabled
+    if let Ok(ipv4_forward) = std::fs::read_to_string("/proc/sys/net/ipv4/ip_forward") {
+        if ipv4_forward.trim() == "1" {
+            issues.push("IPv4 forwarding enabled".to_string());
+        }
+    }
+
+    // Check for unusual routes
+    if let Ok(output) = run_cmd("ip", &["route", "show"]) {
+        for line in output.lines() {
+            // Check for routes to private networks that might indicate tunneling
+            if line.contains("10.0.0.0/8") || line.contains("172.16.0.0/12") || line.contains("192.168.0.0/16") {
+                if line.contains("tun") || line.contains("tap") {
+                    issues.push(format!("VPN/tunnel route detected: {}", line.trim()));
+                }
+            }
+        }
+    }
+
+    if issues.is_empty() {
+        ScanResult::new("network_interfaces", ScanStatus::Pass, "Network interfaces appear normal")
+    } else {
+        ScanResult::new("network_interfaces", ScanStatus::Warn, &format!("Network concerns: {}", issues.join("; ")))
+    }
+}
+
+pub fn scan_systemd_hardening() -> ScanResult {
+    let mut issues = Vec::new();
+
+    // Check if ClawAV service has security hardening enabled
+    let service_file = "/etc/systemd/system/clawav.service";
+    if let Ok(content) = std::fs::read_to_string(service_file) {
+        let security_features = [
+            "NoNewPrivileges=true",
+            "ProtectSystem=strict",
+            "ProtectHome=true",  
+            "PrivateTmp=true",
+            "ProtectKernelTunables=true",
+            "ProtectControlGroups=true",
+            "RestrictRealtime=true",
+            "MemoryDenyWriteExecute=true"
+        ];
+
+        for feature in &security_features {
+            if !content.contains(feature) {
+                issues.push(format!("Missing systemd hardening: {}", feature));
+            }
+        }
+    } else {
+        issues.push("ClawAV service file not found".to_string());
+    }
+
+    // Check systemd version supports security features
+    if let Ok(output) = run_cmd("systemctl", &["--version"]) {
+        if let Some(first_line) = output.lines().next() {
+            if let Some(version_str) = first_line.split_whitespace().nth(1) {
+                if let Ok(version) = version_str.parse::<u32>() {
+                    if version < 231 {
+                        issues.push(format!("Old systemd version ({}), security features limited", version));
+                    }
+                }
+            }
+        }
+    }
+
+    if issues.is_empty() {
+        ScanResult::new("systemd_hardening", ScanStatus::Pass, "Systemd service properly hardened")
+    } else if issues.len() > 5 {
+        ScanResult::new("systemd_hardening", ScanStatus::Warn, &format!("Service hardening incomplete: {} missing features", issues.len()))
+    } else {
+        ScanResult::new("systemd_hardening", ScanStatus::Warn, &format!("Hardening issues: {}", issues.join("; ")))
+    }
+}
+
+pub fn scan_user_account_audit() -> ScanResult {
+    let mut issues = Vec::new();
+
+    // Check for users with UID 0 (root privileges)
+    if let Ok(passwd_content) = std::fs::read_to_string("/etc/passwd") {
+        let mut uid_0_users = Vec::new();
+        for line in passwd_content.lines() {
+            let fields: Vec<&str> = line.split(':').collect();
+            if fields.len() >= 3 {
+                let username = fields[0];
+                let uid = fields[2];
+                if uid == "0" && username != "root" {
+                    uid_0_users.push(username.to_string());
+                }
+            }
+        }
+        if !uid_0_users.is_empty() {
+            issues.push(format!("Non-root users with UID 0: {}", uid_0_users.join(", ")));
+        }
+
+        // Check for users with no password
+        if let Ok(shadow_content) = std::fs::read_to_string("/etc/shadow") {
+            let mut no_password_users = Vec::new();
+            for line in shadow_content.lines() {
+                let fields: Vec<&str> = line.split(':').collect();
+                if fields.len() >= 2 {
+                    let username = fields[0];
+                    let password_hash = fields[1];
+                    if password_hash.is_empty() || password_hash == "*" || password_hash == "!" {
+                        // These are normal for system users, but check if they have shell access
+                        if let Some(passwd_line) = passwd_content.lines().find(|l| l.starts_with(&format!("{}:", username))) {
+                            let passwd_fields: Vec<&str> = passwd_line.split(':').collect();
+                            if passwd_fields.len() >= 7 {
+                                let shell = passwd_fields[6];
+                                if shell.contains("bash") || shell.contains("zsh") || shell.contains("sh") {
+                                    no_password_users.push(username.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !no_password_users.is_empty() {
+                issues.push(format!("Users with shell access but no password: {}", no_password_users.join(", ")));
+            }
+        }
+
+        // Check for recently created users
+        if let Ok(output) = run_cmd("bash", &["-c", "awk -F: '($3>=1000)&&($1!=\"nobody\"){print $1}' /etc/passwd | wc -l"]) {
+            if let Ok(user_count) = output.trim().parse::<u32>() {
+                if user_count > 5 {
+                    issues.push(format!("Many regular user accounts: {}", user_count));
+                }
+            }
+        }
+
+        // Check for users in sudo group
+        if let Ok(group_content) = std::fs::read_to_string("/etc/group") {
+            for line in group_content.lines() {
+                if line.starts_with("sudo:") || line.starts_with("wheel:") || line.starts_with("admin:") {
+                    let fields: Vec<&str> = line.split(':').collect();
+                    if fields.len() >= 4 && !fields[3].is_empty() {
+                        let sudo_users: Vec<&str> = fields[3].split(',').collect();
+                        if sudo_users.len() > 2 {
+                            issues.push(format!("Many users with sudo access: {}", sudo_users.len()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if issues.is_empty() {
+        ScanResult::new("user_accounts", ScanStatus::Pass, "User account configuration secure")
+    } else {
+        ScanResult::new("user_accounts", ScanStatus::Warn, &format!("User account issues: {}", issues.join("; ")))
+    }
+}
+
 pub fn scan_firewall() -> ScanResult {
     match run_cmd_with_sudo("ufw", &["status", "verbose"]) {
         Ok(output) => parse_ufw_status(&output),
@@ -402,6 +1233,25 @@ impl SecurityScanner {
                 std::path::Path::new("/etc/clawav/cognitive-baselines.sha256"),
             ),
             crate::logtamper::scan_audit_log_health(std::path::Path::new("/var/log/audit/audit.log")),
+            // New expanded security checks
+            scan_crontab_audit(),
+            scan_world_writable_files(),
+            scan_suid_sgid_binaries(),
+            scan_kernel_modules(),
+            scan_docker_security(),
+            scan_password_policy(),
+            scan_open_file_descriptors(),
+            scan_dns_resolver(),
+            scan_ntp_sync(),
+            scan_failed_login_attempts(),
+            scan_zombie_processes(),
+            scan_swap_tmpfs_security(),
+            scan_environment_variables(),
+            scan_package_integrity(),
+            scan_core_dump_settings(),
+            scan_network_interfaces(),
+            scan_systemd_hardening(),
+            scan_user_account_audit(),
         ];
         // OpenClaw-specific security checks
         results.extend(scan_openclaw_security());

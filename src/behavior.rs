@@ -153,6 +153,182 @@ const STATIC_COMPILE_PATTERNS: &[&str] = &[
     "musl-cc",
 ];
 
+/// SSH key injection patterns
+const SSH_KEY_INJECTION_PATTERNS: &[&str] = &[
+    ".ssh/authorized_keys",
+    "/root/.ssh/authorized_keys",
+    "/home/*/ssh/authorized_keys",
+];
+
+/// History tampering patterns
+const HISTORY_TAMPER_PATTERNS: &[&str] = &[
+    ".bash_history",
+    ".zsh_history",
+    ".history",
+    "HISTSIZE=0",
+    "HISTFILESIZE=0",
+    "unset HISTFILE",
+];
+
+/// Process injection patterns  
+const PROCESS_INJECTION_PATTERNS: &[&str] = &[
+    "ptrace",
+    "/proc/*/mem",
+    "/proc/*/maps",
+    "PTRACE_ATTACH",
+    "PTRACE_POKETEXT",
+];
+
+/// Timestomping patterns
+const TIMESTOMPING_PATTERNS: &[&str] = &[
+    "touch -t",
+    "touch --date",
+    "touch -d",
+    "touch -r",
+];
+
+/// Log clearing patterns
+const LOG_CLEARING_PATTERNS: &[&str] = &[
+    "> /var/log/",
+    "truncate /var/log/",
+    "rm /var/log/",
+    "> /var/log/syslog",
+    "> /var/log/auth.log",
+    "> /var/log/audit/audit.log",
+    "journalctl --vacuum",
+    "journalctl --rotate",
+];
+
+/// Binary replacement patterns
+const BINARY_REPLACEMENT_PATTERNS: &[&str] = &[
+    "/usr/bin/",
+    "/usr/sbin/", 
+    "/bin/",
+    "/sbin/",
+];
+
+/// Kernel parameter modification patterns
+const KERNEL_PARAM_PATTERNS: &[&str] = &[
+    "sysctl -w",
+    "echo > /proc/sys/",
+    "/proc/sys/kernel/",
+    "/proc/sys/net/",
+];
+
+/// Service creation patterns
+const SERVICE_CREATION_PATTERNS: &[&str] = &[
+    "systemctl enable",
+    "systemctl start", 
+    "/etc/systemd/system/",
+    "/usr/lib/systemd/system/",
+    "/etc/init.d/",
+    "update-rc.d",
+    "chkconfig",
+];
+
+/// Network tunnel creation patterns
+const TUNNEL_CREATION_PATTERNS: &[&str] = &[
+    "ssh -R",
+    "ssh -L",
+    "ssh -D",
+    "chisel",
+    "ngrok",
+    "socat",
+    "proxytunnel",
+    "stunnel",
+];
+
+/// Package manager abuse patterns
+const PACKAGE_MANAGER_ABUSE_PATTERNS: &[&str] = &[
+    "pip install",
+    "npm install",
+    "gem install",
+    "go get",
+    "cargo install",
+    "easy_install",
+];
+
+/// Compiler invocation patterns (could be building exploits)
+const COMPILER_PATTERNS: &[&str] = &[
+    "gcc",
+    "g++",
+    "clang",
+    "cc",
+    "make",
+    "cmake",
+    "rustc",
+    "go build",
+];
+
+/// Memory dump tools
+const MEMORY_DUMP_PATTERNS: &[&str] = &[
+    "gdb attach",
+    "gdb -p",
+    "lldb -p",
+    "/proc/kcore",
+    "dd if=/proc/kcore",
+    "volatility",
+    "memdump",
+];
+
+/// Scheduled task manipulation patterns
+const SCHEDULED_TASK_BINARIES: &[&str] = &[
+    "at",
+    "atq", 
+    "atrm",
+    "batch",
+    "crontab",
+];
+
+/// Encoding/obfuscation tools (excluding common file readers like cat)
+const ENCODING_TOOLS: &[&str] = &[
+    "xxd",
+    "od",
+    "hexdump", 
+    "base64",
+    "base32",
+    "uuencode",
+];
+
+/// File extensions that are suspicious when created in temp directories
+const SUSPICIOUS_TEMP_EXTENSIONS: &[&str] = &[
+    ".elf",
+    ".so",
+    ".bin",
+    ".exe",
+    ".dll",
+    ".dylib",
+];
+
+/// Large file exfiltration patterns
+const LARGE_FILE_EXFIL_PATTERNS: &[&str] = &[
+    "tar -czf",
+    "tar -cf", 
+    "zip -r",
+    "7z a",
+    "gzip",
+    "bzip2",
+];
+
+/// AWS credential theft patterns
+const AWS_CREDENTIAL_PATTERNS: &[&str] = &[
+    "aws sts get-session-token",
+    "aws sts assume-role",
+    "aws configure get",
+    "aws configure list",
+    ".aws/credentials",
+    ".aws/config",
+];
+
+/// Git credential exposure patterns
+const GIT_CREDENTIAL_PATTERNS: &[&str] = &[
+    "git config credential",
+    "git config user.token",
+    "git config --global credential",
+    ".git/config",
+    ".gitconfig",
+];
+
 /// Classify a parsed audit event against known attack patterns.
 /// Returns Some((category, severity)) if the event matches a rule, None otherwise.
 pub fn classify_behavior(event: &ParsedEvent) -> Option<(BehaviorCategory, Severity)> {
@@ -226,6 +402,160 @@ pub fn classify_behavior(event: &ParsedEvent) -> Option<(BehaviorCategory, Sever
         // ptrace can be used to bypass LD_PRELOAD by injecting code directly
         if ["strace", "ltrace", "gdb", "lldb", "ptrace"].contains(&binary) {
             return Some((BehaviorCategory::SecurityTamper, Severity::Critical));
+        }
+
+        // --- CRITICAL: SSH key injection ---
+        if ["tee", "echo", "cp", "mv"].contains(&binary) {  // Exclude "cat" since that's typically reading, not injecting
+            for arg in args.iter().skip(1) {
+                for pattern in SSH_KEY_INJECTION_PATTERNS {
+                    if arg.contains(pattern) {
+                        return Some((BehaviorCategory::PrivilegeEscalation, Severity::Critical));
+                    }
+                }
+            }
+        }
+
+        // --- CRITICAL: History tampering ---
+        if ["rm", "mv", "cp", ">", "truncate", "unset", "export"].contains(&binary) ||
+           cmd_lower.contains("histsize=0") || cmd_lower.contains("histfilesize=0") {
+            for pattern in HISTORY_TAMPER_PATTERNS {
+                if cmd.contains(pattern) {
+                    return Some((BehaviorCategory::SecurityTamper, Severity::Critical));
+                }
+            }
+        }
+
+        // --- CRITICAL: Process injection via ptrace or /proc manipulation ---
+        if let Some(ref cmd) = event.command {
+            for pattern in PROCESS_INJECTION_PATTERNS {
+                if cmd.contains(pattern) {
+                    return Some((BehaviorCategory::PrivilegeEscalation, Severity::Critical));
+                }
+            }
+        }
+
+        // --- WARNING: Timestomping ---
+        if binary == "touch" {
+            for pattern in TIMESTOMPING_PATTERNS {
+                if cmd.contains(pattern) {
+                    return Some((BehaviorCategory::SecurityTamper, Severity::Warning));
+                }
+            }
+        }
+
+        // --- CRITICAL: Log clearing ---
+        if let Some(ref cmd) = event.command {
+            for pattern in LOG_CLEARING_PATTERNS {
+                if cmd.contains(pattern) {
+                    return Some((BehaviorCategory::SecurityTamper, Severity::Critical));
+                }
+            }
+        }
+
+        // --- CRITICAL: Binary replacement in system directories ---
+        if ["cp", "mv", "install", "dd"].contains(&binary) {
+            for arg in args.iter().skip(1) {
+                for pattern in BINARY_REPLACEMENT_PATTERNS {
+                    if arg.starts_with(pattern) && args.len() > 2 {
+                        return Some((BehaviorCategory::SecurityTamper, Severity::Critical));
+                    }
+                }
+            }
+        }
+
+        // --- WARNING: Kernel parameter changes ---
+        if binary == "sysctl" || cmd.contains("echo > /proc/sys/") {
+            for pattern in KERNEL_PARAM_PATTERNS {
+                if cmd.contains(pattern) {
+                    return Some((BehaviorCategory::SecurityTamper, Severity::Warning));
+                }
+            }
+        }
+
+        // --- WARNING: Service creation/modification ---
+        if binary == "systemctl" {
+            for pattern in SERVICE_CREATION_PATTERNS {
+                if cmd.contains(pattern) && !cmd.contains("clawav") {
+                    return Some((BehaviorCategory::SecurityTamper, Severity::Warning));
+                }
+            }
+        }
+
+        // --- CRITICAL: Network tunnel creation ---
+        for pattern in TUNNEL_CREATION_PATTERNS {
+            if binary.contains(pattern) || cmd.contains(pattern) {
+                return Some((BehaviorCategory::DataExfiltration, Severity::Critical));
+            }
+        }
+
+        // --- WARNING: Package manager abuse ---
+        for pattern in PACKAGE_MANAGER_ABUSE_PATTERNS {
+            if cmd.contains(pattern) {
+                // Check if installing from suspicious sources
+                if cmd.contains("git+") || cmd.contains("http://") || cmd.contains("--index-url") {
+                    return Some((BehaviorCategory::SecurityTamper, Severity::Warning));
+                }
+            }
+        }
+
+        // --- WARNING: Compiler invocation (could be building exploits) ---
+        for pattern in COMPILER_PATTERNS {
+            if binary == *pattern || cmd.contains(pattern) {
+                // More suspicious if compiling from /tmp or with network code
+                if args.iter().any(|a| a.contains("/tmp/") || a.contains("socket") || a.contains("network")) {
+                    return Some((BehaviorCategory::SecurityTamper, Severity::Warning));
+                }
+                return Some((BehaviorCategory::Reconnaissance, Severity::Info));
+            }
+        }
+
+        // --- CRITICAL: Memory dump tools ---
+        for pattern in MEMORY_DUMP_PATTERNS {
+            if cmd.contains(pattern) {
+                return Some((BehaviorCategory::DataExfiltration, Severity::Critical));
+            }
+        }
+
+        // --- WARNING: Scheduled task manipulation ---
+        for pattern in SCHEDULED_TASK_BINARIES {
+            if binary == *pattern {
+                return Some((BehaviorCategory::SecurityTamper, Severity::Warning));
+            }
+        }
+
+        // --- WARNING: Encoding/obfuscation tools used on files ---
+        for pattern in ENCODING_TOOLS {
+            if binary == *pattern && args.len() > 1 {
+                // Only flag if being used with suspicious piping or on sensitive files with encoding intent
+                if cmd.contains("| curl") || cmd.contains("| wget") || cmd.contains("| nc") ||
+                   (args.iter().any(|a| a.contains("/proc/")) && cmd.contains("|")) {
+                    return Some((BehaviorCategory::DataExfiltration, Severity::Warning));
+                }
+            }
+        }
+
+        // --- WARNING: Large file exfiltration ---
+        for pattern in LARGE_FILE_EXFIL_PATTERNS {
+            if cmd.contains(pattern) {
+                // Check if targeting sensitive directories
+                if args.iter().any(|a| a.contains("/etc") || a.contains("/var") || a.contains("/home")) {
+                    return Some((BehaviorCategory::DataExfiltration, Severity::Warning));
+                }
+            }
+        }
+
+        // --- WARNING: AWS credential theft ---
+        for pattern in AWS_CREDENTIAL_PATTERNS {
+            if cmd.contains(pattern) {
+                return Some((BehaviorCategory::DataExfiltration, Severity::Warning));
+            }
+        }
+
+        // --- WARNING: Git credential exposure ---
+        for pattern in GIT_CREDENTIAL_PATTERNS {
+            if cmd.contains(pattern) {
+                return Some((BehaviorCategory::DataExfiltration, Severity::Warning));
+            }
         }
 
         // --- CRITICAL: Data Exfiltration via network tools ---
@@ -403,6 +733,53 @@ pub fn classify_behavior(event: &ParsedEvent) -> Option<(BehaviorCategory, Sever
         // /proc/*/mem access (memory reading)
         if path.contains("/proc/") && path.ends_with("/mem") {
             return Some((BehaviorCategory::DataExfiltration, Severity::Critical));
+        }
+
+        // SSH key injection file access
+        for pattern in SSH_KEY_INJECTION_PATTERNS {
+            if path.contains(pattern) && ["openat", "write", "writev"].contains(&event.syscall_name.as_str()) {
+                return Some((BehaviorCategory::PrivilegeEscalation, Severity::Critical));
+            }
+        }
+
+        // History file tampering
+        for pattern in HISTORY_TAMPER_PATTERNS {
+            if path.contains(pattern) && ["unlinkat", "truncate", "write"].contains(&event.syscall_name.as_str()) {
+                return Some((BehaviorCategory::SecurityTamper, Severity::Critical));
+            }
+        }
+
+        // Suspicious file creation in /tmp
+        if path.starts_with("/tmp/") {
+            for ext in SUSPICIOUS_TEMP_EXTENSIONS {
+                if path.ends_with(ext) && ["openat", "creat"].contains(&event.syscall_name.as_str()) {
+                    return Some((BehaviorCategory::SecurityTamper, Severity::Warning));
+                }
+            }
+        }
+
+        // System binary replacement
+        for pattern in BINARY_REPLACEMENT_PATTERNS {
+            if path.starts_with(pattern) && ["write", "writev", "renameat"].contains(&event.syscall_name.as_str()) {
+                return Some((BehaviorCategory::SecurityTamper, Severity::Critical));
+            }
+        }
+
+        // Log file tampering
+        if path.starts_with("/var/log/") && ["unlinkat", "truncate", "write"].contains(&event.syscall_name.as_str()) {
+            return Some((BehaviorCategory::SecurityTamper, Severity::Critical));
+        }
+
+        // Service file creation
+        if (path.contains("/etc/systemd/system/") || path.contains("/etc/init.d/")) && 
+           ["openat", "creat", "write"].contains(&event.syscall_name.as_str()) {
+            return Some((BehaviorCategory::SecurityTamper, Severity::Warning));
+        }
+
+        // Crontab modification
+        if (path.contains("/etc/cron") || path.contains("/var/spool/cron")) && 
+           ["openat", "write", "writev"].contains(&event.syscall_name.as_str()) {
+            return Some((BehaviorCategory::SecurityTamper, Severity::Critical));
         }
     }
 
@@ -608,7 +985,7 @@ mod tests {
     fn test_cat_aws_credentials() {
         let event = make_exec_event(&["cat", "/home/user/.aws/credentials"]);
         let result = classify_behavior(&event);
-        assert_eq!(result, Some((BehaviorCategory::Reconnaissance, Severity::Warning)));
+        assert_eq!(result, Some((BehaviorCategory::DataExfiltration, Severity::Warning)));
     }
 
     #[test]
@@ -697,7 +1074,7 @@ mod tests {
     fn test_access_proc_kcore() {
         let event = make_exec_event(&["cat", "/proc/kcore"]);
         let result = classify_behavior(&event);
-        assert_eq!(result, Some((BehaviorCategory::PrivilegeEscalation, Severity::Critical)));
+        assert_eq!(result, Some((BehaviorCategory::DataExfiltration, Severity::Critical)));
     }
 
     #[test]
