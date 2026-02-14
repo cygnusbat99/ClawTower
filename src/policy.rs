@@ -98,6 +98,13 @@ impl PolicyEngine {
             let path = entry.path();
             match path.extension().and_then(|e| e.to_str()) {
                 Some("yaml") | Some("yml") => {
+                    // Skip clawsudo policies — those are compiled into the clawsudo binary
+                    // and should NOT be evaluated in the auditd monitoring pipeline
+                    if let Some(fname) = path.file_name().and_then(|f| f.to_str()) {
+                        if fname.starts_with("clawsudo") {
+                            continue;
+                        }
+                    }
                     let content = std::fs::read_to_string(&path)
                         .with_context(|| format!("Failed to read {}", path.display()))?;
                     let pf: PolicyFile = serde_yaml::from_str(&content)

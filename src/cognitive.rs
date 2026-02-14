@@ -6,12 +6,13 @@ use std::path::{Path, PathBuf};
 use crate::scanner::{ScanResult, ScanStatus};
 
 /// Cognitive files that control agent behavior
+/// NOTE: MEMORY.md excluded — it changes frequently (agent's working memory).
+/// We protect identity/behavior files, not mutable state.
 const COGNITIVE_FILES: &[&str] = &[
     "SOUL.md",
     "IDENTITY.md", 
     "TOOLS.md",
     "AGENTS.md",
-    "MEMORY.md",
     "USER.md",
     "HEARTBEAT.md",
 ];
