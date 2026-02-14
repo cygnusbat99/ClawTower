@@ -379,25 +379,178 @@ impl SecureClawEngine {
     /// Known-safe sudo commands that should not trigger alerts.
     /// These are legitimate system operations (ClawAV scans, service management, etc.)
     const SUDO_ALLOWLIST: &'static [&'static str] = &[
+        // Firewall management
         "sudo ufw",
+        "sudo iptables -L",
+        "sudo iptables -S",
+        "sudo netfilter-persistent",
+        
+        // Service management
         "sudo systemctl status",
         "sudo systemctl start",
         "sudo systemctl stop",
         "sudo systemctl restart",
         "sudo systemctl is-active",
+        "sudo systemctl is-enabled",
+        "sudo systemctl reload",
+        "sudo systemctl daemon-reload",
+        
+        // Log analysis
         "sudo journalctl",
+        "sudo tail ",
+        "sudo head ",
+        "sudo less /var/log",
+        "sudo cat /var/log",
+        "sudo grep",
+        "sudo zcat",
+        "sudo zless",
+        
+        // Audit system
         "sudo auditctl",
+        "sudo ausearch",
+        "sudo aureport",
+        "sudo auditd",
+        
+        // Package management
         "sudo apt",
         "sudo apt-get",
+        "sudo aptitude",
+        "sudo dpkg",
+        "sudo snap",
+        "sudo yum",
+        "sudo dnf",
+        "sudo rpm",
+        "sudo zypper",
+        
+        // File operations
         "sudo cp ",
         "sudo rm ",
         "sudo mv ",
         "sudo mkdir",
+        "sudo rmdir",
+        "sudo install",
+        "sudo ln ",
+        
+        // Permissions
         "sudo chown",
         "sudo chmod",
+        "sudo chgrp",
+        "sudo chattr",
+        
+        // Text processing
         "sudo tee ",
         "sudo sed ",
+        "sudo awk ",
+        "sudo sort",
+        "sudo uniq",
+        "sudo wc ",
+        
+        // File viewing
         "sudo cat ",
+        "sudo more ",
+        "sudo less ",
+        "sudo head ",
+        "sudo tail ",
+        
+        // Network diagnostics
+        "sudo ss ",
+        "sudo netstat",
+        "sudo lsof",
+        "sudo tcpdump",
+        "sudo nmap 127.0.0.1",
+        "sudo nmap localhost",
+        
+        // Process management
+        "sudo ps ",
+        "sudo pgrep",
+        "sudo pkill",
+        "sudo kill ",
+        "sudo killall",
+        "sudo top",
+        "sudo htop",
+        
+        // System information
+        "sudo lshw",
+        "sudo lscpu",
+        "sudo lsblk",
+        "sudo lsusb",
+        "sudo lspci",
+        "sudo dmidecode",
+        "sudo fdisk -l",
+        "sudo df ",
+        "sudo du ",
+        "sudo free",
+        "sudo uptime",
+        "sudo whoami",
+        "sudo id ",
+        
+        // Mount operations
+        "sudo mount ",
+        "sudo umount",
+        "sudo blkid",
+        "sudo findmnt",
+        
+        // Security scanning
+        "sudo find",
+        "sudo locate",
+        "sudo which",
+        "sudo whereis",
+        "sudo file ",
+        "sudo stat ",
+        "sudo ls ",
+        
+        // Time/date
+        "sudo date",
+        "sudo timedatectl",
+        "sudo hwclock",
+        
+        // Hardware
+        "sudo modprobe",
+        "sudo lsmod",
+        "sudo modinfo",
+        
+        // Performance monitoring
+        "sudo iotop",
+        "sudo iftop",
+        "sudo vmstat",
+        "sudo iostat",
+        "sudo sar ",
+        
+        // User management (read-only)
+        "sudo getent",
+        "sudo id ",
+        "sudo groups",
+        "sudo who",
+        "sudo w ",
+        "sudo last",
+        "sudo lastlog",
+        
+        // Certificate/crypto operations  
+        "sudo openssl",
+        "sudo gpg",
+        
+        // Archive/compression (read operations)
+        "sudo tar -tf",
+        "sudo tar -xf", 
+        "sudo unzip -l",
+        "sudo gunzip",
+        "sudo bunzip2",
+        
+        // Docker/container management
+        "sudo docker ps",
+        "sudo docker images",
+        "sudo docker inspect",
+        "sudo docker logs",
+        "sudo docker stats",
+        "sudo podman",
+        
+        // Database utilities (read-only)
+        "sudo sqlite3",
+        
+        // ClawAV specific
+        "sudo clawav",
+        "sudo /usr/local/bin/clawav",
+        "sudo /opt/clawav/bin/clawav",
     ];
 
     pub fn check_command(&self, cmd: &str) -> Vec<PatternMatch> {
@@ -406,12 +559,21 @@ impl SecureClawEngine {
 
         for pattern in &self.dangerous_commands {
             if let Some(matched) = pattern.regex.find(cmd) {
-                // Skip sudo alerts for known-safe commands
-                if pattern.category == "permission_escalation" 
-                    && matched.as_str().starts_with("sudo")
-                    && Self::SUDO_ALLOWLIST.iter().any(|allowed| cmd_lower.contains(allowed))
-                {
-                    continue;
+                // Skip false positives where "sudo" matches as substring of a word (e.g. "clawsudo")
+                if pattern.category == "permission_escalation" {
+                    let start = matched.start();
+                    if start > 0 {
+                        let prev_char = cmd.as_bytes()[start - 1];
+                        if prev_char.is_ascii_alphanumeric() || prev_char == b'_' || prev_char == b'-' {
+                            continue; // "sudo" is part of a larger word, not a real sudo command
+                        }
+                    }
+                    // Skip sudo alerts for known-safe commands
+                    if matched.as_str().starts_with("sudo")
+                        && Self::SUDO_ALLOWLIST.iter().any(|allowed| cmd_lower.contains(allowed))
+                    {
+                        continue;
+                    }
                 }
 
                 matches.push(PatternMatch {
