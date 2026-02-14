@@ -33,6 +33,13 @@ fn check_log_file(
 
     let metadata = match std::fs::metadata(path) {
         Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Some(Alert::new(
+                Severity::Warning,
+                "logtamper",
+                &format!("Cannot read audit log {} — permission denied (run as root for full monitoring)", path.display()),
+            ));
+        }
         Err(_) => {
             return Some(Alert::new(
                 Severity::Critical,
@@ -87,8 +94,15 @@ fn check_log_file(
 pub fn scan_audit_log_health(log_path: &Path) -> crate::scanner::ScanResult {
     use crate::scanner::{ScanResult, ScanStatus};
 
-    if !log_path.exists() {
-        return ScanResult::new("audit_log", ScanStatus::Fail, "Audit log file does not exist");
+    match std::fs::metadata(log_path) {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return ScanResult::new("audit_log", ScanStatus::Warn, 
+                "Cannot access audit log — permission denied (run as root)");
+        }
+        Err(_) => {
+            return ScanResult::new("audit_log", ScanStatus::Fail, "Audit log file does not exist");
+        }
+        Ok(_) => {} // exists and accessible, continue checks
     }
 
     match std::fs::metadata(log_path) {

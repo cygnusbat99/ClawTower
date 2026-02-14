@@ -90,13 +90,23 @@ impl CognitiveBaseline {
 
             let is_watched = WATCHED_FILES.iter().any(|&f| f == filename.as_ref());
 
-            if !path.exists() {
-                alerts.push(CognitiveAlert {
-                    file: path.clone(),
-                    kind: CognitiveAlertKind::Deleted,
-                    watched: is_watched,
-                });
-            } else if let Ok(current_hash) = compute_sha256(path) {
+            match std::fs::metadata(path) {
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    // Can't access file — skip, don't report as deleted
+                    continue;
+                }
+                Err(_) => {
+                    // File actually missing
+                    alerts.push(CognitiveAlert {
+                        file: path.clone(),
+                        kind: CognitiveAlertKind::Deleted,
+                        watched: is_watched,
+                    });
+                    continue;
+                }
+                Ok(_) => {}
+            }
+            if let Ok(current_hash) = compute_sha256(path) {
                 if &current_hash != expected_hash {
                     let diff = if is_watched {
                         generate_diff(path, &self.workspace_dir)
