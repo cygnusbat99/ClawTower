@@ -92,22 +92,54 @@ fn find_scripts_dir() -> Option<PathBuf> {
     }
     // Check common locations
     let candidates = [
+        PathBuf::from("/home/openclaw/.openclaw/workspace/projects/ClawAV/scripts"),
         PathBuf::from("/home/openclaw/.openclaw/workspace/openclawav/scripts"),
         PathBuf::from("./scripts"),
         PathBuf::from("/opt/clawav/scripts"),
     ];
     for c in &candidates {
-        if c.join("configure.sh").exists() {
+        if c.join("configure.sh").exists() || c.join("uninstall.sh").exists() {
             return Some(c.clone());
         }
     }
     None
 }
 
+fn download_script(name: &str) -> Result<PathBuf> {
+    let version = env!("CARGO_PKG_VERSION");
+    let tag = format!("v{}", version);
+    let url = format!(
+        "https://raw.githubusercontent.com/coltz108/ClawAV/{}/scripts/{}",
+        tag, name
+    );
+    eprintln!("Downloading {} from GitHub ({})...", name, tag);
+    let output = std::process::Command::new("curl")
+        .args(["-sSL", "-f", "-o", &format!("/tmp/clawav-{}", name), &url])
+        .status()?;
+    if !output.success() {
+        // Fall back to main branch
+        let url_main = format!(
+            "https://raw.githubusercontent.com/coltz108/ClawAV/main/scripts/{}",
+            name
+        );
+        let output2 = std::process::Command::new("curl")
+            .args(["-sSL", "-f", "-o", &format!("/tmp/clawav-{}", name), &url_main])
+            .status()?;
+        if !output2.success() {
+            anyhow::bail!("Failed to download script '{}' from GitHub", name);
+        }
+    }
+    let path = PathBuf::from(format!("/tmp/clawav-{}", name));
+    Ok(path)
+}
+
 fn run_script(name: &str, extra_args: &[String]) -> Result<()> {
-    let scripts_dir = find_scripts_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot find scripts directory. Run from the ClawAV source directory or set up with setup.sh first."))?;
-    let script = scripts_dir.join(name);
+    let script = if let Some(scripts_dir) = find_scripts_dir() {
+        let s = scripts_dir.join(name);
+        if s.exists() { s } else { download_script(name)? }
+    } else {
+        download_script(name)?
+    };
     if !script.exists() {
         anyhow::bail!("Script not found: {}", script.display());
     }
