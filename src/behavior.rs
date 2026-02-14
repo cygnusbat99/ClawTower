@@ -794,4 +794,41 @@ mod tests {
         let result = classify_behavior(&event);
         assert_eq!(result, Some((BehaviorCategory::SecurityTamper, Severity::Critical)));
     }
+
+    // --- Environment Variable Exfiltration Detection ---
+
+    #[test]
+    fn test_cat_proc_environ() {
+        let event = make_exec_event(&["cat", "/proc/self/environ"]);
+        let result = classify_behavior(&event);
+        assert_eq!(result, Some((BehaviorCategory::PrivilegeEscalation, Severity::Critical)));
+    }
+
+    #[test]
+    fn test_openat_proc_environ() {
+        let event = make_syscall_event("openat", "/proc/1234/environ");
+        let result = classify_behavior(&event);
+        assert_eq!(result, Some((BehaviorCategory::DataExfiltration, Severity::Critical)));
+    }
+
+    #[test]
+    fn test_proc_mem_access() {
+        let event = make_syscall_event("openat", "/proc/self/mem");
+        let result = classify_behavior(&event);
+        assert_eq!(result, Some((BehaviorCategory::DataExfiltration, Severity::Critical)));
+    }
+
+    #[test]
+    fn test_strings_proc_environ() {
+        let event = make_exec_event(&["strings", "/proc/1/environ"]);
+        let result = classify_behavior(&event);
+        assert_eq!(result, Some((BehaviorCategory::DataExfiltration, Severity::Critical)));
+    }
+
+    #[test]
+    fn test_xxd_proc_maps() {
+        let event = make_exec_event(&["xxd", "/proc/self/maps"]);
+        let result = classify_behavior(&event);
+        assert_eq!(result, Some((BehaviorCategory::DataExfiltration, Severity::Critical)));
+    }
 }
