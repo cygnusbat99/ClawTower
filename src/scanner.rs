@@ -387,7 +387,7 @@ pub fn scan_secureclaw_sync() -> ScanResult {
 
 impl SecurityScanner {
     pub fn run_all_scans() -> Vec<ScanResult> {
-        vec![
+        let mut results = vec![
             scan_firewall(),
             scan_auditd(),
             scan_integrity(),
@@ -402,8 +402,103 @@ impl SecurityScanner {
                 std::path::Path::new("/etc/clawav/cognitive-baselines.sha256"),
             ),
             crate::logtamper::scan_audit_log_health(std::path::Path::new("/var/log/audit/audit.log")),
-        ]
+        ];
+        // OpenClaw-specific security checks
+        results.extend(scan_openclaw_security());
+        results
     }
+}
+
+/// OpenClaw-specific security checks
+fn scan_openclaw_security() -> Vec<ScanResult> {
+    let mut results = Vec::new();
+
+    // Check OpenClaw gateway config (JSON format in openclaw.json)
+    let config_paths = [
+        "/home/openclaw/.openclaw/openclaw.json",
+        "/home/openclaw/.openclaw/agents/main/agent/gateway.yaml",
+    ];
+    let gateway_config = config_paths.iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .and_then(|p| std::fs::read_to_string(p).ok());
+
+    if let Some(ref config) = gateway_config {
+        // ── 1. Gateway not publicly exposed ──────────────────────────────
+        let bind_loopback = config.contains("\"loopback\"") || config.contains("\"127.0.0.1\"");
+        let bind_public = config.contains("\"bind\":\"0.0.0.0\"") || config.contains("\"bind\": \"0.0.0.0\"");
+        
+        let listeners = run_cmd("ss", &["-tlnp"]).unwrap_or_default();
+        let gateway_exposed = listeners.lines().any(|l| l.contains("0.0.0.0:18789") || l.contains("*:18789"));
+
+        if bind_public || gateway_exposed {
+            results.push(ScanResult::new("openclaw:gateway", ScanStatus::Fail,
+                "Gateway bound to 0.0.0.0 — publicly accessible! Use loopback + tunnel"));
+        } else if bind_loopback {
+            results.push(ScanResult::new("openclaw:gateway", ScanStatus::Pass,
+                "Gateway bound to loopback only"));
+        } else {
+            results.push(ScanResult::new("openclaw:gateway", ScanStatus::Warn,
+                "Gateway bind address unclear — verify not public"));
+        }
+
+        // ── 2. Auth required ─────────────────────────────────────────────
+        let has_auth = config.contains("\"token\"") && config.contains("\"auth\"");
+        let auth_none = config.contains("\"mode\":\"none\"") || config.contains("\"mode\": \"none\"");
+        
+        if auth_none || !has_auth {
+            results.push(ScanResult::new("openclaw:auth", ScanStatus::Fail,
+                "Gateway auth disabled — anyone can connect"));
+        } else {
+            results.push(ScanResult::new("openclaw:auth", ScanStatus::Pass,
+                "Gateway auth enabled (token mode)"));
+        }
+
+        // ── 3. Filesystem scoped ─────────────────────────────────────────
+        let workspace_root = config.contains("\"workspace\":\"/\"") || config.contains("\"workspace\": \"/\"");
+        let workspace_scoped = config.contains("\"workspace\":\"/home/") || config.contains("\"workspace\": \"/home/");
+
+        if workspace_root {
+            results.push(ScanResult::new("openclaw:filesystem", ScanStatus::Fail,
+                "Workspace set to / — agent has full filesystem access"));
+        } else if workspace_scoped {
+            results.push(ScanResult::new("openclaw:filesystem", ScanStatus::Pass,
+                "Workspace scoped to home directory"));
+        } else {
+            results.push(ScanResult::new("openclaw:filesystem", ScanStatus::Warn,
+                "Verify workspace is properly scoped"));
+        }
+    } else {
+        results.push(ScanResult::new("openclaw:config", ScanStatus::Warn,
+            "OpenClaw gateway config not found — skipping OpenClaw checks"));
+    }
+
+    // ── 4. Access via Tailscale/SSH tunnel ───────────────────────────────
+    // Check if Tailscale is running
+    let tailscale_running = run_cmd("tailscale", &["status"]).is_ok()
+        || run_cmd("systemctl", &["is-active", "tailscaled"]).map(|s| s.trim() == "active").unwrap_or(false);
+    
+    // Check for SSH tunnel (common patterns)
+    let ssh_tunnels = run_cmd("ss", &["-tlnp"]).unwrap_or_default();
+    let has_tunnel = tailscale_running 
+        || ssh_tunnels.contains("ssh")
+        || std::path::Path::new("/var/run/tailscaled.socket").exists();
+
+    // Check if Connectify or similar tunnel is in use
+    let connectify = std::path::Path::new("/etc/connectify").exists()
+        || run_cmd("systemctl", &["is-active", "connectify"]).map(|s| s.trim() == "active").unwrap_or(false);
+
+    if tailscale_running {
+        results.push(ScanResult::new("openclaw:tunnel", ScanStatus::Pass,
+            "Tailscale VPN active — secure tunnel access"));
+    } else if connectify || has_tunnel {
+        results.push(ScanResult::new("openclaw:tunnel", ScanStatus::Pass,
+            "Tunnel/VPN detected for remote access"));
+    } else {
+        results.push(ScanResult::new("openclaw:tunnel", ScanStatus::Warn,
+            "No VPN/tunnel detected — ensure gateway is not directly exposed"));
+    }
+
+    results
 }
 
 /// Spawn periodic scan task
