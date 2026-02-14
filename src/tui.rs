@@ -216,12 +216,23 @@ impl App {
             // Handle navigation mode
             match (key, modifiers) {
                 (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-                    // Save config
+                    // Save config — try direct first, fall back to sudo
                     if let (Some(ref config), Some(ref path)) = (&self.config, &self.config_path) {
-                        if let Err(_) = config.save(path) {
+                        if config.save(path).is_ok() {
+                            self.config_saved_message = Some("Saved!".to_string());
+                        } else if nix_is_root() {
                             self.config_saved_message = Some("Save failed!".to_string());
                         } else {
-                            self.config_saved_message = Some("Saved!".to_string());
+                            // Need sudo — write to temp, then sudo copy
+                            let path_str = path.display().to_string();
+                            self.sudo_popup = Some(SudoPopup {
+                                action: format!("save_config:{}", path_str),
+                                password: String::new(),
+                                message: format!("Save config to {}", path_str),
+                                status: SudoStatus::WaitingForPassword,
+                            });
+                            // Write config to temp file for later sudo copy
+                            let _ = config.save(&PathBuf::from("/tmp/clawav-config-save.toml"));
                         }
                     }
                 }
@@ -301,11 +312,20 @@ impl App {
     }
 
     fn run_sudo_action(&mut self, action: &str, password: &str) {
-        let shell_cmd = match action {
-            "install_falco" => "apt-get update -qq && apt-get install -y -qq falco 2>&1 || dnf install -y falco 2>&1 || echo 'INSTALL_FAILED'",
-            "install_samhain" => "apt-get update -qq && apt-get install -y -qq samhain 2>&1 || dnf install -y samhain 2>&1 || echo 'INSTALL_FAILED'",
-            _ => return,
+        let shell_cmd: String = if action.starts_with("save_config:") {
+            let path = &action["save_config:".len()..];
+            format!(
+                "chattr -i '{}' 2>/dev/null; cp /tmp/clawav-config-save.toml '{}' && chattr +i '{}' && rm -f /tmp/clawav-config-save.toml && echo 'CONFIG_SAVED'",
+                path, path, path
+            )
+        } else {
+            match action {
+                "install_falco" => "apt-get update -qq && apt-get install -y -qq falco 2>&1 || dnf install -y falco 2>&1 || echo 'INSTALL_FAILED'".to_string(),
+                "install_samhain" => "apt-get update -qq && apt-get install -y -qq samhain 2>&1 || dnf install -y samhain 2>&1 || echo 'INSTALL_FAILED'".to_string(),
+                _ => return,
+            }
         };
+        let shell_cmd = shell_cmd.as_str();
 
         let result = if nix_is_root() || password.is_empty() {
             std::process::Command::new("bash")
@@ -343,7 +363,9 @@ impl App {
             Ok(output) => {
                 let out = String::from_utf8_lossy(&output.stdout);
                 let err = String::from_utf8_lossy(&output.stderr);
-                if output.status.success() && !out.contains("INSTALL_FAILED") {
+                if out.contains("CONFIG_SAVED") {
+                    self.config_saved_message = Some("✅ Saved!".to_string());
+                } else if output.status.success() && !out.contains("INSTALL_FAILED") {
                     self.config_saved_message = Some("✅ Installed! Refresh with Left/Right.".to_string());
                 } else if err.contains("incorrect password") || err.contains("Sorry, try again") {
                     self.config_saved_message = Some("❌ Wrong password".to_string());
