@@ -1,11 +1,37 @@
 #!/usr/bin/env bash
 # ClawAV Setup Script
-# Builds from source, installs binaries, creates config, sets up systemd service.
+#
+# Usage:
+#   sudo bash scripts/setup.sh              # Install pre-built binaries
+#   sudo bash scripts/setup.sh --source     # Build from source + install
+#
 # Does NOT apply the "swallowed key" hardening — run install.sh for that.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+BUILD_FROM_SOURCE=false
+
+# Parse flags
+for arg in "$@"; do
+    case "$arg" in
+        --source|--build|--from-source)
+            BUILD_FROM_SOURCE=true
+            ;;
+        --help|-h)
+            echo "Usage: sudo bash setup.sh [--source]"
+            echo ""
+            echo "  (default)    Install pre-built binaries from target/release/"
+            echo "  --source     Build from source first (installs Rust if needed)"
+            echo ""
+            exit 0
+            ;;
+        *)
+            echo "Unknown flag: $arg (try --help)" >&2
+            exit 1
+            ;;
+    esac
+done
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -22,96 +48,121 @@ echo ""
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║                🛡️  ClawAV Setup                             ║${NC}"
 echo -e "${CYAN}║                                                              ║${NC}"
-echo -e "${CYAN}║  This will build, install, and configure ClawAV as a         ║${NC}"
-echo -e "${CYAN}║  system service. No irreversible changes are made.           ║${NC}"
+if $BUILD_FROM_SOURCE; then
+echo -e "${CYAN}║  Mode: BUILD FROM SOURCE                                     ║${NC}"
+echo -e "${CYAN}║  Will install Rust and build dependencies if needed.         ║${NC}"
+else
+echo -e "${CYAN}║  Mode: INSTALL PRE-BUILT BINARIES                            ║${NC}"
+echo -e "${CYAN}║  Use --source to build from scratch instead.                 ║${NC}"
+fi
 echo -e "${CYAN}║                                                              ║${NC}"
-echo -e "${CYAN}║  For tamper-proof hardening, run install.sh afterward.        ║${NC}"
+echo -e "${CYAN}║  No irreversible changes. Run install.sh to harden.          ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# ── Preflight checks ─────────────────────────────────────────────────────────
+# ── Preflight ─────────────────────────────────────────────────────────────────
 [[ $EUID -eq 0 ]] || die "Must run as root (sudo bash scripts/setup.sh)"
 
-# ── Install system dependencies ──────────────────────────────────────────────
-log "Checking system dependencies..."
-if command -v apt-get &>/dev/null; then
-    # Debian/Ubuntu
-    NEEDED=""
-    command -v gcc &>/dev/null || NEEDED="$NEEDED build-essential"
-    command -v pkg-config &>/dev/null || NEEDED="$NEEDED pkg-config"
-    dpkg -l libssl-dev &>/dev/null 2>&1 || NEEDED="$NEEDED libssl-dev"
-    command -v git &>/dev/null || NEEDED="$NEEDED git"
-    command -v auditctl &>/dev/null || NEEDED="$NEEDED auditd"
-    if [[ -n "$NEEDED" ]]; then
-        log "Installing system packages:$NEEDED"
-        apt-get update -qq
-        apt-get install -y -qq $NEEDED
-    fi
-elif command -v dnf &>/dev/null; then
-    # Fedora/RHEL
-    NEEDED=""
-    command -v gcc &>/dev/null || NEEDED="$NEEDED gcc"
-    command -v pkg-config &>/dev/null || NEEDED="$NEEDED pkg-config"
-    command -v git &>/dev/null || NEEDED="$NEEDED git"
-    command -v auditctl &>/dev/null || NEEDED="$NEEDED audit"
-    if [[ -n "$NEEDED" ]]; then
-        log "Installing system packages:$NEEDED"
-        dnf install -y -q $NEEDED openssl-devel
-    fi
-elif command -v pacman &>/dev/null; then
-    # Arch
-    command -v gcc &>/dev/null || pacman -S --noconfirm base-devel
-    command -v git &>/dev/null || pacman -S --noconfirm git
-fi
-
-# ── Install Rust if needed ───────────────────────────────────────────────────
-# Check all common cargo locations
-export PATH="$HOME/.cargo/bin:/home/*/.cargo/bin:/root/.cargo/bin:$PATH"
-for USER_HOME in /home/*/; do
-    [[ -f "${USER_HOME}.cargo/bin/cargo" ]] && export PATH="${USER_HOME}.cargo/bin:$PATH"
-done
-
-if ! command -v cargo &>/dev/null; then
-    log "Rust not found — installing via rustup..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable 2>&1 | tail -3
-    source "$HOME/.cargo/env" 2>/dev/null || true
-    export PATH="$HOME/.cargo/bin:$PATH"
-    command -v cargo &>/dev/null || die "Rust installation failed"
-    info "Rust installed: $(rustc --version)"
-else
-    # Make sure a default toolchain is set
-    if ! cargo --version &>/dev/null 2>&1; then
-        log "Setting default Rust toolchain..."
-        rustup default stable 2>/dev/null || rustup toolchain install stable
-        rustup default stable
-    fi
-    info "Rust found: $(cargo --version 2>/dev/null || echo 'available')"
-fi
-
-# ── Step 1: Build ─────────────────────────────────────────────────────────────
-log "Building ClawAV from source..."
-cd "$PROJECT_DIR"
-cargo build --release 2>&1 | tail -3
-echo ""
-
+# ── Locate or build binaries ──────────────────────────────────────────────────
 CLAWAV_BIN="$PROJECT_DIR/target/release/clawav"
 CLAWSUDO_BIN="$PROJECT_DIR/target/release/clawsudo"
 
-[[ -f "$CLAWAV_BIN" ]] || die "Build failed — binary not found"
-info "Built: clawav ($(du -h "$CLAWAV_BIN" | cut -f1)), clawsudo ($(du -h "$CLAWSUDO_BIN" | cut -f1))"
+if $BUILD_FROM_SOURCE; then
+    # ── Install system build dependencies ─────────────────────────────────────
+    log "Checking system dependencies..."
+    if command -v apt-get &>/dev/null; then
+        NEEDED=""
+        command -v gcc &>/dev/null || NEEDED="$NEEDED build-essential"
+        command -v pkg-config &>/dev/null || NEEDED="$NEEDED pkg-config"
+        dpkg -l libssl-dev &>/dev/null 2>&1 || NEEDED="$NEEDED libssl-dev"
+        command -v git &>/dev/null || NEEDED="$NEEDED git"
+        command -v auditctl &>/dev/null || NEEDED="$NEEDED auditd"
+        if [[ -n "$NEEDED" ]]; then
+            log "Installing system packages:$NEEDED"
+            apt-get update -qq
+            apt-get install -y -qq $NEEDED
+        fi
+    elif command -v dnf &>/dev/null; then
+        NEEDED=""
+        command -v gcc &>/dev/null || NEEDED="$NEEDED gcc"
+        command -v pkg-config &>/dev/null || NEEDED="$NEEDED pkg-config"
+        command -v git &>/dev/null || NEEDED="$NEEDED git"
+        command -v auditctl &>/dev/null || NEEDED="$NEEDED audit"
+        if [[ -n "$NEEDED" ]]; then
+            log "Installing system packages:$NEEDED"
+            dnf install -y -q $NEEDED openssl-devel
+        fi
+    elif command -v pacman &>/dev/null; then
+        command -v gcc &>/dev/null || pacman -S --noconfirm base-devel
+        command -v git &>/dev/null || pacman -S --noconfirm git
+    fi
 
-# ── Step 2: Create directories ────────────────────────────────────────────────
+    # ── Install Rust if needed ────────────────────────────────────────────────
+    export PATH="$HOME/.cargo/bin:/root/.cargo/bin:$PATH"
+    for USER_HOME in /home/*/; do
+        [[ -f "${USER_HOME}.cargo/bin/cargo" ]] && export PATH="${USER_HOME}.cargo/bin:$PATH"
+    done
+
+    if ! command -v cargo &>/dev/null; then
+        log "Rust not found — installing via rustup..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable 2>&1 | tail -3
+        source "$HOME/.cargo/env" 2>/dev/null || true
+        export PATH="$HOME/.cargo/bin:$PATH"
+        command -v cargo &>/dev/null || die "Rust installation failed"
+        info "Rust installed: $(rustc --version)"
+    else
+        # Make sure a default toolchain is set
+        if ! cargo --version &>/dev/null 2>&1; then
+            log "Setting default Rust toolchain..."
+            rustup default stable 2>/dev/null || rustup toolchain install stable
+            rustup default stable
+        fi
+        info "Rust found: $(cargo --version 2>/dev/null || echo 'available')"
+    fi
+
+    # ── Build ─────────────────────────────────────────────────────────────────
+    log "Building ClawAV from source (this may take a few minutes)..."
+    cd "$PROJECT_DIR"
+    cargo build --release 2>&1 | tail -5
+    echo ""
+
+    [[ -f "$CLAWAV_BIN" ]] || die "Build failed — binary not found"
+    info "Built: clawav ($(du -h "$CLAWAV_BIN" | cut -f1)), clawsudo ($(du -h "$CLAWSUDO_BIN" | cut -f1))"
+
+else
+    # ── Pre-built mode: just check binaries exist ─────────────────────────────
+    if [[ ! -f "$CLAWAV_BIN" ]]; then
+        die "Pre-built binary not found at $CLAWAV_BIN
+  Either build first:  cargo build --release
+  Or run with:         sudo bash scripts/setup.sh --source"
+    fi
+    info "Using pre-built binaries"
+    info "  clawav:   $(du -h "$CLAWAV_BIN" | cut -f1)"
+    info "  clawsudo: $(du -h "$CLAWSUDO_BIN" | cut -f1)"
+fi
+
+# ── Install system deps (auditd) even in pre-built mode ──────────────────────
+if ! command -v auditctl &>/dev/null; then
+    log "Installing auditd..."
+    if command -v apt-get &>/dev/null; then
+        apt-get update -qq && apt-get install -y -qq auditd
+    elif command -v dnf &>/dev/null; then
+        dnf install -y -q audit
+    fi
+fi
+
+# ── Create directories ────────────────────────────────────────────────────────
 log "Creating directories..."
 mkdir -p /etc/clawav/policies /var/log/clawav /var/run/clawav
 
-# ── Step 3: Install binaries ──────────────────────────────────────────────────
+# ── Install binaries ──────────────────────────────────────────────────────────
 log "Installing binaries to /usr/local/bin/..."
 cp "$CLAWAV_BIN" /usr/local/bin/clawav
 cp "$CLAWSUDO_BIN" /usr/local/bin/clawsudo
 chmod 755 /usr/local/bin/clawav /usr/local/bin/clawsudo
 info "Installed: /usr/local/bin/clawav, /usr/local/bin/clawsudo"
 
-# ── Step 4: Install config ───────────────────────────────────────────────────
+# ── Install config ────────────────────────────────────────────────────────────
 if [[ -f /etc/clawav/config.toml ]]; then
     warn "Config already exists at /etc/clawav/config.toml — keeping existing"
 else
@@ -127,15 +178,15 @@ else
     echo ""
 fi
 
-# ── Step 5: Install policies ─────────────────────────────────────────────────
+# ── Install policies ──────────────────────────────────────────────────────────
 if [[ -d "$PROJECT_DIR/policies" ]] && [[ -n "$(ls -A "$PROJECT_DIR/policies/" 2>/dev/null)" ]]; then
     log "Installing policy files..."
     cp "$PROJECT_DIR/policies/"*.yaml /etc/clawav/policies/ 2>/dev/null || true
     info "Policies installed to /etc/clawav/policies/"
 fi
 
-# ── Step 6: Build LD_PRELOAD guard (optional) ─────────────────────────────────
-if [[ -f "$SCRIPT_DIR/build-preload.sh" ]]; then
+# ── Build LD_PRELOAD guard (optional, source mode only) ──────────────────────
+if $BUILD_FROM_SOURCE && [[ -f "$SCRIPT_DIR/build-preload.sh" ]]; then
     log "Building LD_PRELOAD guard..."
     if bash "$SCRIPT_DIR/build-preload.sh" 2>/dev/null; then
         info "LD_PRELOAD guard built (enable later with scripts/enable-preload.sh)"
@@ -144,18 +195,18 @@ if [[ -f "$SCRIPT_DIR/build-preload.sh" ]]; then
     fi
 fi
 
-# ── Step 7: Initialize SecureClaw submodule (optional) ────────────────────────
-if [[ -f "$PROJECT_DIR/.gitmodules" ]]; then
+# ── Initialize SecureClaw submodule (optional) ────────────────────────────────
+if [[ -f "$PROJECT_DIR/.gitmodules" ]] && command -v git &>/dev/null; then
     log "Initializing SecureClaw pattern databases..."
     cd "$PROJECT_DIR"
     if git submodule update --init vendor/secureclaw 2>/dev/null; then
         info "SecureClaw patterns loaded — enable with [secureclaw] enabled = true"
     else
-        warn "SecureClaw submodule init failed (optional — needs git)"
+        warn "SecureClaw submodule init failed (optional)"
     fi
 fi
 
-# ── Step 8: Create systemd service ───────────────────────────────────────────
+# ── Create systemd service ────────────────────────────────────────────────────
 log "Installing systemd service..."
 cat > /etc/systemd/system/clawav.service <<'EOF'
 [Unit]
@@ -184,7 +235,7 @@ systemctl daemon-reload
 systemctl enable clawav
 info "Service installed and enabled (will start on boot)"
 
-# ── Step 9: Set up auditd rules (if available) ───────────────────────────────
+# ── Set up auditd rules (if available) ────────────────────────────────────────
 if command -v auditctl &>/dev/null; then
     log "Setting up auditd rules..."
     if [[ -f "$SCRIPT_DIR/setup-auditd.sh" ]]; then
