@@ -6,6 +6,7 @@ description = "Tamper-proof security watchdog for AI agents"
 license = "MIT"
 
 [dependencies]
+libc = "0.2"
 ratatui = "0.29"
 crossterm = "0.28"
 tokio = { version = "1", features = ["full"] }

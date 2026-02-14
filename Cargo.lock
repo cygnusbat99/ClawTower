@@ -172,6 +172,7 @@ dependencies = [
  "glob-match",
  "hex",
  "hyper 0.14.32",
+ "libc",
  "notify",
  "rand 0.8.5",
  "ratatui",

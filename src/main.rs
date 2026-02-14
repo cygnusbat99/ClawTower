@@ -332,11 +332,16 @@ async fn main() -> Result<()> {
         let watched = config.general.effective_watched_users();
         let pe = policy_engine.clone();
         let se = secureclaw_engine.clone();
-        tokio::spawn(async move {
-            if let Err(e) = auditd::tail_audit_log_with_behavior_and_policy(&path, watched, tx, pe, se).await {
-                eprintln!("auditd monitor error: {}", e);
-            }
-        });
+        // Check read access before spawning
+        if std::fs::metadata(&path).is_ok() {
+            tokio::spawn(async move {
+                if let Err(e) = auditd::tail_audit_log_with_behavior_and_policy(&path, watched, tx, pe, se).await {
+                    eprintln!("auditd monitor error: {}", e);
+                }
+            });
+        } else {
+            eprintln!("auditd monitor: skipping (no read access to {} — run as root for full monitoring)", path.display());
+        }
     }
 
     // Spawn network monitor (auto-detect journald vs file)
@@ -453,11 +458,13 @@ async fn main() -> Result<()> {
 
     // Spawn audit log tampering monitor
     if config.auditd.enabled {
-        let tx = raw_tx.clone();
         let log_path = PathBuf::from(&config.auditd.log_path);
-        tokio::spawn(async move {
-            crate::logtamper::monitor_log_integrity(log_path, tx, 30).await;
-        });
+        if std::fs::metadata(&log_path).is_ok() {
+            let tx = raw_tx.clone();
+            tokio::spawn(async move {
+                crate::logtamper::monitor_log_integrity(log_path, tx, 30).await;
+            });
+        }
     }
 
     // Initialize admin key and spawn admin socket
@@ -465,8 +472,23 @@ async fn main() -> Result<()> {
     if let Err(e) = admin::init_admin_key(&admin_key_hash_path) {
         eprintln!("Admin key init: {} (non-fatal, admin socket will still start)", e);
     }
+    // Use /var/run/clawav/ if accessible, otherwise fall back to /tmp/
+    let socket_dir = PathBuf::from("/var/run/clawav");
+    let socket_path = if socket_dir.exists() && std::fs::metadata(&socket_dir).map(|m| {
+        use std::os::unix::fs::MetadataExt;
+        m.uid() == unsafe { libc::getuid() } || unsafe { libc::getuid() } == 0
+    }).unwrap_or(false) {
+        socket_dir.join("admin.sock")
+    } else {
+        let fallback = PathBuf::from(format!("/tmp/clawav-{}/admin.sock", unsafe { libc::getuid() }));
+        if let Some(parent) = fallback.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        eprintln!("Admin socket: using fallback {}", fallback.display());
+        fallback
+    };
     let admin_socket = admin::AdminSocket::new(
-        PathBuf::from("/var/run/clawav/admin.sock"),
+        socket_path,
         admin_key_hash_path,
         raw_tx.clone(),
     );
