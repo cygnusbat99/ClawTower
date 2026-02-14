@@ -549,6 +549,9 @@ impl SecureClawEngine {
         // Database utilities (read-only)
         "sudo sqlite3",
         
+        // User switching (common in deploy scripts)
+        "sudo -u ",
+        
         // ClawAV specific
         "sudo clawav",
         "sudo /usr/local/bin/clawav",
@@ -570,6 +573,11 @@ impl SecureClawEngine {
                             continue; // "sudo" is part of a larger word, not a real sudo command
                         }
                     }
+                    // Skip AWS CLI commands — sudo appears in remote command payloads, not local
+                    if cmd_lower.starts_with("aws ") || cmd.contains("/bin/aws ") {
+                        continue;
+                    }
+
                     // Skip sudo alerts for known-safe commands
                     if matched.as_str().starts_with("sudo")
                         && Self::SUDO_ALLOWLIST.iter().any(|allowed| cmd_lower.contains(allowed))
