@@ -624,8 +624,9 @@ async fn async_main() -> Result<()> {
         let tx = raw_tx.clone();
         let scan_store = scanner::new_shared_scan_results();
         let interval = config.scans.interval;
+        let oc_cfg = config.openclaw.clone();
         tokio::spawn(async move {
-            scanner::run_periodic_scans(interval, tx, scan_store).await;
+            scanner::run_periodic_scans(interval, tx, scan_store, oc_cfg).await;
         });
     }
 

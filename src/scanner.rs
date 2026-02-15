@@ -1465,7 +1465,7 @@ impl SecurityScanner {
     /// Docker, password policy, open FDs, DNS, NTP, failed logins, zombie processes,
     /// swap/tmpfs, environment variables, packages, core dumps, network interfaces,
     /// systemd hardening, user accounts, cognitive integrity, and OpenClaw-specific checks.
-    pub fn run_all_scans() -> Vec<ScanResult> {
+    pub fn run_all_scans_with_config(openclaw_config: &crate::config::OpenClawConfig) -> Vec<ScanResult> {
         let mut results = vec![
             scan_firewall(),
             scan_auditd(),
@@ -1511,7 +1511,43 @@ impl SecurityScanner {
         ));
         // OpenClaw-specific security checks
         results.extend(scan_openclaw_security());
+
+        // OpenClaw security integration (config-driven)
+        if openclaw_config.enabled {
+            // Phase 1: Audit CLI
+            if openclaw_config.audit_on_scan {
+                results.extend(run_openclaw_audit(&openclaw_config.audit_command));
+            }
+
+            // Phase 2: Config drift
+            if openclaw_config.config_drift_check {
+                results.extend(crate::openclaw_config::scan_config_drift(
+                    &openclaw_config.config_path, &openclaw_config.baseline_path));
+            }
+
+            // Phase 3: mDNS
+            if openclaw_config.mdns_check {
+                results.extend(scan_mdns_leaks());
+            }
+
+            // Phase 3: Extensions
+            if openclaw_config.plugin_watch {
+                results.extend(scan_extensions_dir(
+                    &format!("{}/extensions", openclaw_config.state_dir)));
+            }
+
+            // Phase 3: Control UI
+            if let Ok(cfg_str) = std::fs::read_to_string(&openclaw_config.config_path) {
+                results.extend(scan_control_ui_security(&cfg_str));
+            }
+        }
+
         results
+    }
+
+    /// Execute all security checks with default OpenClaw config.
+    pub fn run_all_scans() -> Vec<ScanResult> {
+        Self::run_all_scans_with_config(&crate::config::OpenClawConfig::default())
     }
 }
 
@@ -1867,10 +1903,12 @@ pub async fn run_periodic_scans(
     interval_secs: u64,
     raw_tx: mpsc::Sender<Alert>,
     scan_store: SharedScanResults,
+    openclaw_config: crate::config::OpenClawConfig,
 ) {
     loop {
         // Run scans in blocking task since they use Command
-        let results = tokio::task::spawn_blocking(|| SecurityScanner::run_all_scans())
+        let oc_cfg = openclaw_config.clone();
+        let results = tokio::task::spawn_blocking(move || SecurityScanner::run_all_scans_with_config(&oc_cfg))
             .await
             .unwrap_or_default();
 
