@@ -31,9 +31,10 @@ ipnet = "2"
 ed25519-dalek = { version = "2", features = ["std"] }
 ksni = { version = "0.2", optional = true }
 dbus = { version = "0.9", optional = true }
+png = { version = "0.17", optional = true }
 
 [features]
-tray = ["dep:ksni", "dep:dbus"]
+tray = ["dep:ksni", "dep:dbus", "dep:png"]
 
 [[bin]]
 name = "clawav"

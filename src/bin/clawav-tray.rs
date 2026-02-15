@@ -1,7 +1,7 @@
-use ksni::{self, menu::*};
+use ksni::menu::*;
 use reqwest::blocking::Client;
 use serde::Deserialize;
-use std::process::{self, Command};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -13,6 +13,7 @@ const API_BASE: &str = "http://127.0.0.1:18791";
 #[derive(Debug, Clone, Default)]
 struct TrayState {
     running: bool,
+    paused: bool,
     alerts_critical: u32,
     alerts_warning: u32,
     alerts_total: u32,
@@ -21,6 +22,8 @@ struct TrayState {
 
 #[derive(Debug, Deserialize)]
 struct StatusResponse {
+    #[serde(default)]
+    paused: Option<bool>,
     #[serde(default)]
     alerts_critical: Option<u32>,
     #[serde(default)]
@@ -31,48 +34,37 @@ struct StatusResponse {
     last_scan_epoch: Option<i64>,
 }
 
-/// Generate a 16x16 RGBA icon with a colored circle.
-fn make_icon(r: u8, g: u8, b: u8) -> ksni::Icon {
-    let size = 16i32;
-    let mut data = vec![0u8; (size * size * 4) as usize];
-    let center = size as f32 / 2.0;
-    let radius = 6.0f32;
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as f32 - center + 0.5;
-            let dy = y as f32 - center + 0.5;
-            let dist = (dx * dx + dy * dy).sqrt();
-            let idx = ((y * size + x) * 4) as usize;
-            if dist <= radius {
-                // ARGB32 format for ksni
-                data[idx] = 255; // A
-                data[idx + 1] = r;
-                data[idx + 2] = g;
-                data[idx + 3] = b;
-            }
-        }
+/// Load embedded lobster PNG and convert RGBA → ARGB32 for ksni
+fn lobster_icon() -> ksni::Icon {
+    let png_bytes = include_bytes!("../../assets/lobster.png");
+    let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    let mut reader = decoder.read_info().expect("PNG decode");
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).expect("PNG frame");
+    let width = info.width as i32;
+    let height = info.height as i32;
+
+    let mut argb = vec![0u8; (width * height * 4) as usize];
+    for i in 0..(width * height) as usize {
+        let si = i * 4;
+        argb[si] = buf[si + 3];     // A
+        argb[si + 1] = buf[si];     // R
+        argb[si + 2] = buf[si + 1]; // G
+        argb[si + 3] = buf[si + 2]; // B
     }
-    ksni::Icon {
-        width: size,
-        height: size,
-        data,
+
+    ksni::Icon { width, height, data: argb }
+}
+
+/// Run a command via pkexec (polkit GUI password prompt)
+fn run_elevated(args: &[&str]) {
+    let mut cmd = Command::new("pkexec");
+    cmd.args(args);
+    match cmd.status() {
+        Ok(s) if s.success() => eprintln!("Elevated command succeeded: {:?}", args),
+        Ok(s) => eprintln!("Elevated command failed ({}): {:?}", s, args),
+        Err(e) => eprintln!("Failed to launch pkexec: {e}"),
     }
-}
-
-fn green_icon() -> ksni::Icon {
-    make_icon(76, 175, 80)
-}
-
-fn yellow_icon() -> ksni::Icon {
-    make_icon(255, 193, 7)
-}
-
-fn red_icon() -> ksni::Icon {
-    make_icon(244, 67, 54)
-}
-
-fn grey_icon() -> ksni::Icon {
-    make_icon(158, 158, 158)
 }
 
 struct ClawAVTray {
@@ -81,17 +73,7 @@ struct ClawAVTray {
 
 impl ksni::Tray for ClawAVTray {
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        let st = self.state.lock().unwrap();
-        let icon = if !st.running {
-            grey_icon()
-        } else if st.alerts_critical > 0 {
-            red_icon()
-        } else if st.alerts_warning > 0 {
-            yellow_icon()
-        } else {
-            green_icon()
-        };
-        vec![icon]
+        vec![lobster_icon()]
     }
 
     fn title(&self) -> String {
@@ -104,7 +86,13 @@ impl ksni::Tray for ClawAVTray {
 
     fn tool_tip(&self) -> ksni::ToolTip {
         let st = self.state.lock().unwrap();
-        let status = if st.running { "Running" } else { "Stopped" };
+        let status = if !st.running {
+            "Stopped"
+        } else if st.paused {
+            "Paused"
+        } else {
+            "Running"
+        };
         ksni::ToolTip {
             title: format!("ClawAV v{VERSION} — {status}"),
             description: format!("Alerts: {}", st.alerts_total),
@@ -114,14 +102,31 @@ impl ksni::Tray for ClawAVTray {
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let st = self.state.lock().unwrap();
-        let status = if st.running { "Running" } else { "Stopped" };
+        let status = if !st.running {
+            "Stopped"
+        } else if st.paused {
+            "Paused"
+        } else {
+            "Running"
+        };
         let last_scan = match st.last_scan_mins {
             Some(m) => format!("{m} min ago"),
             None => "N/A".into(),
         };
-        let alerts = st.alerts_total;
+        let alert_label = if st.alerts_critical > 0 {
+            format!("Alerts: {} ({} critical)", st.alerts_total, st.alerts_critical)
+        } else {
+            format!("Alerts: {}", st.alerts_total)
+        };
+
+        let pause_label = if st.paused {
+            "Resume Monitoring \u{1f513}"
+        } else {
+            "Pause Monitoring \u{1f513}"
+        };
 
         vec![
+            // --- Status section ---
             StandardItem {
                 label: format!("ClawAV v{VERSION} — {status}"),
                 enabled: false,
@@ -129,7 +134,7 @@ impl ksni::Tray for ClawAVTray {
             }
             .into(),
             StandardItem {
-                label: format!("Alerts: {alerts}"),
+                label: alert_label,
                 enabled: false,
                 ..Default::default()
             }
@@ -141,14 +146,15 @@ impl ksni::Tray for ClawAVTray {
             }
             .into(),
             MenuItem::Separator,
+            // --- Actions ---
             StandardItem {
                 label: "Open TUI".into(),
                 activate: Box::new(|_| {
-                    let _ = Command::new("alacritty")
+                    let _ = Command::new("x-terminal-emulator")
                         .args(["-e", "clawav"])
                         .spawn()
                         .or_else(|_| {
-                            Command::new("x-terminal-emulator")
+                            Command::new("lxterminal")
                                 .args(["-e", "clawav"])
                                 .spawn()
                         });
@@ -159,18 +165,44 @@ impl ksni::Tray for ClawAVTray {
             StandardItem {
                 label: "Open Dashboard".into(),
                 activate: Box::new(|_| {
-                    let _ = Command::new("xdg-open")
-                        .arg(API_BASE)
-                        .spawn();
+                    let _ = Command::new("xdg-open").arg(API_BASE).spawn();
+                }),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "Run Scan Now".into(),
+                activate: Box::new(|_| {
+                    thread::spawn(|| {
+                        let _ = Client::new()
+                            .post(format!("{API_BASE}/api/scan"))
+                            .timeout(Duration::from_secs(5))
+                            .send();
+                    });
+                }),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            // --- Elevated actions (require password via pkexec) ---
+            StandardItem {
+                label: pause_label.into(),
+                activate: Box::new(|_| {
+                    thread::spawn(|| {
+                        run_elevated(&["clawav-ctl", "toggle-pause"]);
+                    });
                 }),
                 ..Default::default()
             }
             .into(),
             MenuItem::Separator,
             StandardItem {
-                label: "Quit".into(),
+                label: "Quit \u{1f513}".into(),
                 activate: Box::new(|_| {
-                    process::exit(0);
+                    thread::spawn(|| {
+                        run_elevated(&["systemctl", "stop", "clawav"]);
+                        std::process::exit(0);
+                    });
                 }),
                 ..Default::default()
             }
@@ -203,6 +235,7 @@ fn poll_status(client: &Client, state: &Arc<Mutex<TrayState>>) {
     let mut st = state.lock().unwrap();
     st.running = true;
     if let Some(s) = status {
+        st.paused = s.paused.unwrap_or(false);
         st.alerts_critical = s.alerts_critical.unwrap_or(0);
         st.alerts_warning = s.alerts_warning.unwrap_or(0);
         st.alerts_total = s.alerts_total.unwrap_or(0);
@@ -214,6 +247,8 @@ fn poll_status(client: &Client, state: &Arc<Mutex<TrayState>>) {
 }
 
 fn main() {
+    eprintln!("ClawAV Tray v{VERSION} starting...");
+
     let state = Arc::new(Mutex::new(TrayState::default()));
     let poll_state = Arc::clone(&state);
 
@@ -227,5 +262,8 @@ fn main() {
     });
 
     let service = ksni::TrayService::new(ClawAVTray { state });
-    service.run();
+    if let Err(e) = service.run() {
+        eprintln!("TrayService failed: {e}");
+        std::process::exit(1);
+    }
 }
