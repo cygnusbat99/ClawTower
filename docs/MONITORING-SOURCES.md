@@ -149,7 +149,7 @@ Parses iptables/netfilter log lines from syslog or kernel messages.
 
 ### How It Works
 
-1. Scans each log line for a configurable prefix string (e.g., `"[CLAWAV-NET]"`)
+1. Scans each log line for a configurable prefix string (e.g., `"CLAWAV_NET"`)
 2. Extracts `SRC`, `DST`, `DPT`, and `PROTO` fields from iptables log format
 3. Classifies traffic using `NetworkAllowlist`
 

@@ -635,12 +635,12 @@ The following public items are used internally and may be relevant when extendin
 - **`parse_audit_line(line, watched_users)`** — Full pipeline: parse + behavior/policy checks → `Alert`
 
 ### `behavior.rs`
-- **`BehaviorCategory`** — Enum: `DataExfiltration`, `PrivilegeEscalation`, `SecurityTamper`, `Reconnaissance`, `SideChannel`
+- **`BehaviorCategory`** — Enum: `DataExfiltration`, `PrivilegeEscalation`, `SecurityTamper`, `Reconnaissance`, `SideChannel`, `SecureClawMatch` (dead_code)
 - **`classify_behavior(event)`** — Takes a `ParsedEvent`, returns `Option<(BehaviorCategory, Severity)>`
 
 ### `cognitive.rs`
-- **`CognitiveAlert`** — Struct: `path`, `kind`, `message`, `diff`
-- **`CognitiveAlertKind`** — Enum: `Modified`, `Deleted`, `NewUnexpected`, `ContentThreat`, `BaselineMissing`
+- **`CognitiveAlert`** — Struct: `file` (PathBuf), `kind` (CognitiveAlertKind), `watched` (bool)
+- **`CognitiveAlertKind`** — Enum: `Modified { diff: Option<String> }`, `Deleted`, `NewFile`
 - **`scan_cognitive_integrity(workspace_dir, baseline_path, secureclaw)`** — Runs cognitive checks, returns `Vec<ScanResult>`
 
 ### `sentinel.rs`
@@ -671,8 +671,8 @@ The following public items are used internally and may be relevant when extendin
 - **`SudoPopup`** — Struct for the sudo password modal in TUI
 - **`SudoStatus`** — Enum: `Idle`, `Waiting`, `Success`, `Failed(String)`
 
-### `config.rs` (Sub-structs)
-All config section structs are public and `Deserialize + Serialize + Default`:
+### Config Sub-structs (`config.rs` + `secureclaw.rs`)
+All config section structs are public and `Deserialize + Serialize + Default`. Most are defined in `config.rs`; `SecureClawConfig` is defined in `secureclaw.rs` and re-exported via `use` in `config.rs`:
 `GeneralConfig`, `SlackConfig`, `AuditdConfig`, `NetworkConfig`, `FalcoConfig`, `SamhainConfig`, `SshConfig`, `ApiConfig`, `ScansConfig`, `ProxyConfig`, `KeyMapping`, `DlpConfig`, `DlpPattern`, `PolicyConfig`, `NetPolicyConfig`, `SentinelConfig`, `WatchPathConfig`, `WatchPolicy`, `AutoUpdateConfig`
 
 - **`WatchPolicy`** — Enum: `Protected`, `Watched` — sentinel file policy

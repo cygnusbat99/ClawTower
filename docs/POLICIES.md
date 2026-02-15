@@ -16,8 +16,8 @@ rules:
     match:                          # Required. At least one match type.
       command: []                   # Exact binary name match (basename)
       command_contains: []          # Substring match against full command
-      file_access: []               # Glob patterns for file paths
-      exclude_args: []              # Whitelist — skip match if any appear in args
+      file_access: []               # Glob patterns for file paths (detection engine only, not clawsudo)
+      exclude_args: []              # Whitelist — skip match if any appear in args (detection engine only, not clawsudo)
     action: "critical"              # Required. Severity: "info", "warning", "critical"
     enforcement: "deny"             # Optional (clawsudo only): "allow", "deny", "ask"
 ```

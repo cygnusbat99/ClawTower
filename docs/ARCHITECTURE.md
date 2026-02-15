@@ -30,7 +30,7 @@ main.rs
 └── update.rs          (self-update from GitHub + Ed25519 verify)
 
 bin/clawsudo.rs        (standalone binary, own policy loader)
-preload/interpose.c    (standalone .so, no Rust dependency)
+src/preload/interpose.c  (standalone .so, no Rust dependency)
 ```
 
 ## Data Flow — Alert Pipeline
