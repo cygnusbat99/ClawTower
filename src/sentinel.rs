@@ -229,9 +229,11 @@ impl Sentinel {
 
         let policy = policy_for_path(&self.config, path);
 
-        // Scan content if enabled
+        // Scan content if enabled — but skip for Watched files (workspace docs like
+        // MEMORY.md legitimately contain IPs, paths, credentials references, etc.
+        // that trigger SecureClaw privacy patterns as false positives).
         let mut threat_found = false;
-        if self.config.scan_content {
+        if self.config.scan_content && policy != Some(WatchPolicy::Watched) {
             if let Some(ref engine) = self.engine {
                 let content_matches = engine.check_text(&current);
                 let diff_matches = engine.check_text(&diff);
