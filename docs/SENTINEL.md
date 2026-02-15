@@ -215,7 +215,7 @@ SecureClaw uses curated pattern databases that detect:
 - Credential/secret patterns
 - Known malicious payloads
 
-These are loaded and managed by the `SecureClawEngine` — see SecureClaw documentation for details on pattern management.
+These are loaded and managed by the `SecureClawEngine` — see [SECURITY-SCANNERS.md](SECURITY-SCANNERS.md#secureclaw-pattern-engine) for details on pattern databases and management.
 
 ---
 
@@ -319,19 +319,19 @@ ClawAV has **two layers** of file integrity monitoring:
 
 | | Sentinel (`sentinel.rs`) | Cognitive (`cognitive.rs`) |
 |---|---|---|
-| **Trigger** | Real-time (inotify events) | Periodic (hourly scan cycle) |
+| **Trigger** | Real-time (inotify events) | Periodic (runs each scan cycle, configured via `[scans].interval`) |
 | **Scope** | Any configured path | Hardcoded cognitive files (`SOUL.md`, `IDENTITY.md`, `TOOLS.md`, `AGENTS.md`, `USER.md`, `HEARTBEAT.md`, `MEMORY.md`) |
 | **Baseline** | Shadow file copies (full content) | SHA-256 hashes (+ shadow copies for watched files) |
 | **Protected action** | Quarantine + restore from shadow | Alert only (Critical) |
 | **Watched action** | Update shadow, Info alert | Update hash + shadow, Warn alert with diff |
-| **Content scanning** | SecureClaw patterns on every change | SecureClaw on protected files only (watched files skip to avoid false positives) |
+| **Content scanning** | SecureClaw patterns on every change | Hash-only comparison (SecureClaw not invoked; watched files skip content scanning to avoid false positives) |
 | **Config** | `[sentinel]` in config.toml | Hardcoded file lists |
 | **Shadow location** | `/etc/clawav/sentinel-shadow/` | `/etc/clawav/cognitive-shadow/` |
 
 ### Why Both?
 
 - **Sentinel** is the frontline — catches changes in milliseconds and can **actively restore** protected files before damage spreads.
-- **Cognitive** is the safety net — runs on the hourly scan cycle and catches anything the Sentinel might miss (e.g., if the Sentinel was temporarily stopped, or if a file was changed before the Sentinel started).
+- **Cognitive** is the safety net — runs on each periodic scan cycle (see [SECURITY-SCANNERS.md](SECURITY-SCANNERS.md#cognitive-integrity)) and catches anything the Sentinel might miss (e.g., if the Sentinel was temporarily stopped, or if a file was changed before the Sentinel started).
 
 They use **separate shadow directories** and operate independently. Together they provide defense in depth.
 
@@ -364,7 +364,7 @@ Check ClawAV's log file or Slack channel for this message.
 
 ### Viewing Alerts
 
-Sentinel alerts flow through ClawAV's standard alert pipeline:
+Sentinel alerts flow through ClawAV's standard alert pipeline (see [ALERT-PIPELINE.md](ALERT-PIPELINE.md)):
 
 - **Slack** — Critical alerts are forwarded to your configured Slack channel
 - **Log file** — All alerts (Info and above) are written to the log at `general.log_file`
