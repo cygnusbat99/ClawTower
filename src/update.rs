@@ -7,6 +7,7 @@
 //! 5. Logs the upgrade to Slack
 
 use anyhow::{bail, Context, Result};
+use ed25519_dalek::{Verifier, VerifyingKey, Signature};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{self, Write};
@@ -14,6 +15,24 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const GITHUB_REPO: &str = "coltz108/ClawAV";
+const RELEASE_PUBLIC_KEY: &[u8; 32] = include_bytes!("release-key.pub");
+
+fn verify_release_signature(binary_data: &[u8], sig_bytes: &[u8]) -> Result<()> {
+    if sig_bytes.len() != 64 {
+        bail!("Invalid signature length: {} (expected 64)", sig_bytes.len());
+    }
+    let pubkey = VerifyingKey::from_bytes(RELEASE_PUBLIC_KEY)
+        .context("Invalid embedded public key")?;
+    let mut hasher = Sha256::new();
+    hasher.update(binary_data);
+    let digest = hasher.finalize();
+    let sig = Signature::from_slice(sig_bytes)
+        .context("Invalid signature format")?;
+    pubkey.verify(&digest, &sig)
+        .context("❌ SIGNATURE VERIFICATION FAILED — binary may be tampered")?;
+    eprintln!("✅ Ed25519 signature verified");
+    Ok(())
+}
 const ADMIN_KEY_HASH_PATH: &str = "/etc/clawav/admin.key.hash";
 
 /// Detect the correct release asset name for this platform
@@ -65,8 +84,8 @@ fn verify_admin_key(key: &str) -> Result<bool> {
 }
 
 /// Fetch release info from GitHub API (latest or specific version)
-fn fetch_release(version: Option<&str>) -> Result<(String, String, Option<String>)> {
-    // Returns (tag, download_url, sha256_url)
+fn fetch_release(version: Option<&str>) -> Result<(String, String, Option<String>, Option<String>)> {
+    // Returns (tag, download_url, sha256_url, sig_url)
     let url = if let Some(ver) = version {
         let tag = if ver.starts_with('v') { ver.to_string() } else { format!("v{}", ver) };
         format!(
@@ -94,6 +113,7 @@ fn fetch_release(version: Option<&str>) -> Result<(String, String, Option<String
 
     let target_asset = asset_name();
     let sha_asset = format!("{}.sha256", target_asset);
+    let sig_asset = format!("{}.sig", target_asset);
 
     let assets = release["assets"]
         .as_array()
@@ -101,6 +121,7 @@ fn fetch_release(version: Option<&str>) -> Result<(String, String, Option<String
 
     let mut download_url = None;
     let mut sha256_url = None;
+    let mut sig_url = None;
 
     for asset in assets {
         let name = asset["name"].as_str().unwrap_or("");
@@ -109,13 +130,15 @@ fn fetch_release(version: Option<&str>) -> Result<(String, String, Option<String
             download_url = Some(url.to_string());
         } else if name == sha_asset {
             sha256_url = Some(url.to_string());
+        } else if name == sig_asset {
+            sig_url = Some(url.to_string());
         }
     }
 
     let download_url = download_url
         .with_context(|| format!("No asset '{}' found in release {}", target_asset, tag))?;
 
-    Ok((tag, download_url, sha256_url))
+    Ok((tag, download_url, sha256_url, sig_url))
 }
 
 /// Download binary and optionally verify checksum
@@ -276,7 +299,7 @@ pub fn run_update(args: &[String]) -> Result<()> {
         } else {
             eprintln!("Checking for latest release...");
         }
-        let (tag, download_url, sha256_url) = fetch_release(target_version.as_deref())?;
+        let (tag, download_url, sha256_url, sig_url) = fetch_release(target_version.as_deref())?;
         let remote_version = tag.strip_prefix('v').unwrap_or(&tag);
 
         eprintln!("Release: {} ({})", tag, asset_name());
@@ -297,6 +320,19 @@ pub fn run_update(args: &[String]) -> Result<()> {
         }
 
         let data = download_and_verify(&download_url, sha256_url.as_deref())?;
+
+        // Verify Ed25519 signature if available
+        if let Some(ref sig_url) = sig_url {
+            eprintln!("Verifying Ed25519 signature...");
+            let client = reqwest::blocking::Client::builder()
+                .user_agent("clawav-updater")
+                .build()?;
+            let sig_bytes = client.get(sig_url).send()?.error_for_status()?.bytes()?.to_vec();
+            verify_release_signature(&data, &sig_bytes)?;
+        } else {
+            eprintln!("⚠️  No .sig file in release — skipping signature verification (pre-signing release)");
+        }
+
         (data, tag)
     };
 
@@ -378,6 +414,12 @@ mod tests {
         let args = vec!["--key=OCAV-test456".to_string()];
         let key = get_admin_key(&args).unwrap();
         assert_eq!(key, "OCAV-test456");
+    }
+
+    #[test]
+    fn test_verify_signature_bad_length() {
+        let result = verify_release_signature(b"binary", &[0u8; 10]);
+        assert!(result.is_err());
     }
 
     #[test]

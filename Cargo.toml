@@ -28,6 +28,7 @@ regex = "1"
 serde_yaml = "0.9"
 glob-match = "0.2"
 ipnet = "2"
+ed25519-dalek = { version = "2", features = ["std"] }
 
 [[bin]]
 name = "clawav"
