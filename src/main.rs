@@ -42,6 +42,7 @@ mod journald;
 mod logtamper;
 mod netpolicy;
 mod network;
+mod openclaw_config;
 mod policy;
 mod proxy;
 mod samhain;
