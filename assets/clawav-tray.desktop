@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ClawAV Tray
+Comment=ClawAV security monitor tray icon
+Exec=/usr/local/bin/clawav-tray
+Icon=clawav
+Terminal=false
+Categories=System;Security;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true

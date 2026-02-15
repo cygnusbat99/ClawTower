@@ -1,6 +1,6 @@
 [package]
 name = "clawav"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 description = "Tamper-proof security watchdog for AI agents"
 license = "MIT"
@@ -47,6 +47,11 @@ path = "src/bin/clawsudo.rs"
 [[bin]]
 name = "clawav-tray"
 path = "src/bin/clawav-tray.rs"
+required-features = ["tray"]
+
+[[bin]]
+name = "clawav-ctl"
+path = "src/bin/clawav-ctl.rs"
 required-features = ["tray"]
 
 [dev-dependencies]
