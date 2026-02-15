@@ -60,8 +60,20 @@ Checks GitHub releases every 5 minutes (configurable). Downloads new binaries wi
 ### 🚪 clawsudo
 A sudo proxy/gatekeeper binary. Every privileged command the agent runs goes through policy evaluation first. Rules can allow, deny, or alert on specific commands, arguments, and file access patterns. Denied commands return exit code 77.
 
-### 🧬 LD_PRELOAD Guard & Behavioral Analysis
-Syscall-level monitoring through auditd with behavioral classification: data exfiltration, privilege escalation, security tampering, reconnaissance, and side-channel attacks. Distinguishes between agent and human actors via auid attribution.
+### 🧬 Behavioral Analysis & Auditd Monitoring
+Syscall-level monitoring through auditd with behavioral classification: data exfiltration, privilege escalation, security tampering, reconnaissance, and side-channel attacks. Distinguishes between agent and human actors via auid attribution. Includes LD_PRELOAD guard, build tool suppression, and safe-host allowlisting.
+
+### 🔑 API Key Vault Proxy
+Reverse proxy that maps virtual API keys to real ones — the agent never sees actual credentials. Provider-aware header rewriting for Anthropic and OpenAI. Built-in DLP (Data Loss Prevention) scanning blocks SSNs, AWS keys, and redacts credit card numbers from outbound requests.
+
+### 🌐 Network Policy Engine
+Allowlist or blocklist mode for outbound connections. Supports wildcard suffix matching (e.g., `*.anthropic.com`). Scans commands for embedded URLs and validates against policy.
+
+### 🔐 Admin Key System
+"Swallowed key" authentication: Argon2-hashed admin key generated once and never stored. Required for custom binary updates, uninstall, and admin socket commands. Rate limited (3 failures → 1 hour lockout). Unix domain socket for authenticated runtime commands (status, scan, pause, config-update).
+
+### 📝 Log Tamper Detection
+Monitors audit log files for evidence destruction: missing files, inode replacement (distinguishing log rotation), and file truncation. Critical alerts on any suspicious change.
 
 ## Quick Start
 
@@ -168,7 +180,12 @@ dir = "./policies"              # YAML policy rules for clawsudo
 enabled = false
 mode = "blocklist"              # allowlist | blocklist
 blocked_hosts = ["evil.com"]
+
+[ssh]
+enabled = true                  # Monitor SSH login events via journald
 ```
+
+> 📖 **Full configuration reference:** See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for every field, type, default value, and YAML example.
 
 ## Usage
 
