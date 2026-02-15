@@ -155,16 +155,15 @@ fn run_script(name: &str, extra_args: &[String]) -> Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Check privileges and re-exec via sudo BEFORE tokio starts.
+/// This ensures the password prompt isn't clobbered by async tasks.
+fn ensure_root() {
     let args: Vec<String> = std::env::args().collect();
     let subcommand = args.get(1).map(|s| s.as_str()).unwrap_or("run");
-    let rest_args: Vec<String> = args.iter().skip(2).cloned().collect();
 
-    // Auto-escalate to root if not already running as root
     // Skip for help/version which don't need privileges
-    if unsafe { libc::getuid() } != 0 
-        && !matches!(subcommand, "help" | "--help" | "-h" | "version" | "--version" | "-V") 
+    if unsafe { libc::getuid() } != 0
+        && !matches!(subcommand, "help" | "--help" | "-h" | "version" | "--version" | "-V")
     {
         eprintln!("🛡️  ClawAV requires root privileges.");
         eprintln!("   Enter your password to continue:\n");
@@ -182,6 +181,20 @@ async fn main() -> Result<()> {
             }
         }
     }
+}
+
+fn main() -> Result<()> {
+    // Auth FIRST, before any async runtime
+    ensure_root();
+
+    // Now start tokio and run the app
+    tokio::runtime::Runtime::new()?.block_on(async_main())
+}
+
+async fn async_main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let subcommand = args.get(1).map(|s| s.as_str()).unwrap_or("run");
+    let rest_args: Vec<String> = args.iter().skip(2).cloned().collect();
 
     match subcommand {
         "help" | "--help" | "-h" => {
