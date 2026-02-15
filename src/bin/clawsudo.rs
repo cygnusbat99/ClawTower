@@ -218,11 +218,40 @@ fn send_slack_sync(webhook_url: &str, text: &str) {
 
 // ─── Main ───
 
+fn print_help() {
+    eprintln!("clawsudo — sudo proxy/gatekeeper for ClawAV");
+    eprintln!();
+    eprintln!("Usage: clawsudo <command> [args...]");
+    eprintln!();
+    eprintln!("Every privileged command is evaluated against ClawAV policy rules");
+    eprintln!("before being passed to sudo for execution.");
+    eprintln!();
+    eprintln!("Policy decisions:");
+    eprintln!("  ALLOW  — command runs via sudo immediately");
+    eprintln!("  DENY   — command is blocked, alert sent to Slack");
+    eprintln!("  ASK    — unknown command, waits for human approval via touch file");
+    eprintln!();
+    eprintln!("Exit codes:");
+    eprintln!("  0   success");
+    eprintln!("  1   general failure");
+    eprintln!("  77  denied by policy");
+    eprintln!("  78  approval timeout");
+    eprintln!();
+    eprintln!("Policy files: /etc/clawav/policies/*.yaml");
+    eprintln!("Logs: /var/log/clawav/clawsudo.log");
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
         eprintln!("Usage: clawsudo <command> [args...]");
         return ExitCode::from(EXIT_FAIL);
+    }
+
+    // Handle help flags before policy evaluation
+    if matches!(args[0].as_str(), "--help" | "-h" | "help") {
+        print_help();
+        return ExitCode::from(EXIT_OK);
     }
 
     let cmd_binary = args[0]
