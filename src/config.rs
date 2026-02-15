@@ -28,6 +28,27 @@ pub struct Config {
     pub ssh: SshConfig,
     #[serde(default)]
     pub sentinel: SentinelConfig,
+    #[serde(default)]
+    pub auto_update: AutoUpdateConfig,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AutoUpdateConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_auto_update_interval")]
+    pub interval: u64,
+}
+
+fn default_auto_update_interval() -> u64 { 300 }
+
+impl Default for AutoUpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval: 300,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

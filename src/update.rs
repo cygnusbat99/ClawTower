@@ -13,6 +13,9 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::Command;
+use tokio::sync::mpsc;
+use crate::alerts::{Alert, Severity};
+use std::time::Duration;
 
 const GITHUB_REPO: &str = "coltz108/ClawAV";
 const RELEASE_PUBLIC_KEY: &[u8; 32] = include_bytes!("release-key.pub");
@@ -384,6 +387,114 @@ pub fn run_update(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Compare version strings: returns true if remote is newer than current.
+/// Strips leading 'v' and compares semver components numerically.
+pub fn is_newer_version(current: &str, remote: &str) -> bool {
+    let current = current.strip_prefix('v').unwrap_or(current);
+    let remote = remote.strip_prefix('v').unwrap_or(remote);
+    if current == remote {
+        return false;
+    }
+    let parse = |s: &str| -> Vec<u64> {
+        s.split('.').filter_map(|p| p.parse().ok()).collect()
+    };
+    let c = parse(current);
+    let r = parse(remote);
+    for i in 0..c.len().max(r.len()) {
+        let cv = c.get(i).copied().unwrap_or(0);
+        let rv = r.get(i).copied().unwrap_or(0);
+        if rv > cv { return true; }
+        if rv < cv { return false; }
+    }
+    false
+}
+
+/// Background auto-updater loop. Checks GitHub for new releases and installs them.
+pub async fn run_auto_updater(alert_tx: mpsc::Sender<Alert>, interval_secs: u64) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+
+        let tx = alert_tx.clone();
+        let result: Result<()> = async {
+            // fetch_release uses reqwest::blocking, so wrap in spawn_blocking
+            let (tag, download_url, sha256_url, sig_url) =
+                tokio::task::spawn_blocking(|| fetch_release(None))
+                    .await
+                    .context("spawn_blocking join error")??;
+
+            let current_version = env!("CARGO_PKG_VERSION");
+            let remote_version = tag.strip_prefix('v').unwrap_or(&tag);
+
+            if !is_newer_version(current_version, remote_version) {
+                return Ok(());
+            }
+
+            let _ = tx.send(Alert::new(
+                Severity::Info, "auto-update",
+                &format!("New release {} available, auto-updating...", tag),
+            )).await;
+
+            if sha256_url.is_none() {
+                bail!("Release has no checksum file — refusing unverified binary");
+            }
+
+            let dl_url = download_url.clone();
+            let sha_url = sha256_url.clone();
+            let sig_url2 = sig_url.clone();
+            let (binary_data, sig_bytes) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+                let data = download_and_verify(&dl_url, sha_url.as_deref())?;
+                let sig = if let Some(ref su) = sig_url2 {
+                    let client = reqwest::blocking::Client::builder()
+                        .user_agent("clawav-updater").build()?;
+                    Some(client.get(su).send()?.error_for_status()?.bytes()?.to_vec())
+                } else { None };
+                Ok((data, sig))
+            }).await.context("spawn_blocking join error")??;
+
+            if let Some(ref sig) = sig_bytes {
+                verify_release_signature(&binary_data, sig)?;
+            }
+
+            // Binary replace (chattr dance)
+            let binary_path = current_binary_path()?;
+            let tmp_path = binary_path.with_extension("new");
+            fs::write(&tmp_path, &binary_data)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o755))?;
+            }
+            let _ = run_cmd("chattr", &["-i", &binary_path.to_string_lossy()]);
+            fs::rename(&tmp_path, &binary_path)?;
+            let _ = run_cmd("chattr", &["+i", &binary_path.to_string_lossy()]);
+
+            let _ = tx.send(Alert::new(
+                Severity::Info, "auto-update",
+                &format!("Updated to {}, restarting...", tag),
+            )).await;
+
+            // Notify Slack (blocking)
+            let current_ver = format!("v{}", current_version);
+            let tag2 = tag.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                notify_slack(&current_ver, &tag2);
+            }).await;
+
+            // Restart service
+            let _ = run_cmd("systemctl", &["restart", "clawav"]);
+
+            Ok(())
+        }.await;
+
+        if let Err(e) = result {
+            let _ = alert_tx.send(Alert::new(
+                Severity::Warning, "auto-update",
+                &format!("Auto-update check failed: {}", e),
+            )).await;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,6 +525,18 @@ mod tests {
         let args = vec!["--key=OCAV-test456".to_string()];
         let key = get_admin_key(&args).unwrap();
         assert_eq!(key, "OCAV-test456");
+    }
+
+    #[test]
+    fn test_is_newer_version() {
+        assert!(is_newer_version("0.1.0", "0.2.0"));
+        assert!(is_newer_version("0.1.0", "v0.2.0"));
+        assert!(is_newer_version("1.0.0", "1.0.1"));
+        assert!(is_newer_version("1.0.0", "2.0.0"));
+        assert!(!is_newer_version("0.2.0", "0.1.0"));
+        assert!(!is_newer_version("0.2.0", "0.2.0"));
+        assert!(!is_newer_version("v0.2.0", "v0.2.0"));
+        assert!(is_newer_version("0.9.9", "1.0.0"));
     }
 
     #[test]

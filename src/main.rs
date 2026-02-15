@@ -621,6 +621,15 @@ async fn async_main() -> Result<()> {
         });
     }
 
+    // Spawn auto-updater (checks for new GitHub releases)
+    if config.auto_update.enabled {
+        let update_tx = raw_tx.clone();
+        let update_interval = config.auto_update.interval;
+        tokio::spawn(async move {
+            crate::update::run_auto_updater(update_tx, update_interval).await;
+        });
+    }
+
     // Send startup alert (through aggregator)
     let startup = Alert::new(Severity::Info, "system", "ClawAV watchdog started");
     let _ = raw_tx.send(startup).await;
