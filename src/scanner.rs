@@ -1740,24 +1740,30 @@ fn scan_extensions_dir(extensions_path: &str) -> Vec<ScanResult> {
 }
 
 /// Check OpenClaw Control UI security settings.
+/// Check OpenClaw Control UI security settings using proper JSON parsing.
 fn scan_control_ui_security(config: &str) -> Vec<ScanResult> {
     let mut results = Vec::new();
     
-    if config.contains("dangerouslyDisableDeviceAuth")
-        && (config.contains("\"dangerouslyDisableDeviceAuth\":true")
-            || config.contains("\"dangerouslyDisableDeviceAuth\": true")
-            || config.contains("\"dangerouslyDisableDeviceAuth\" : true")) {
-        results.push(ScanResult::new("openclaw:controlui", ScanStatus::Fail,
-            "Control UI: dangerouslyDisableDeviceAuth is TRUE — severe security downgrade"));
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(config) {
+        // Check dangerouslyDisableDeviceAuth
+        let dangerous = val.pointer("/controlUi/dangerouslyDisableDeviceAuth")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if dangerous {
+            results.push(ScanResult::new("openclaw:controlui", ScanStatus::Fail,
+                "Control UI: dangerouslyDisableDeviceAuth is TRUE — severe security downgrade"));
+        }
+        
+        // Check allowInsecureAuth
+        let insecure = val.pointer("/controlUi/allowInsecureAuth")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if insecure {
+            results.push(ScanResult::new("openclaw:controlui", ScanStatus::Warn,
+                "Control UI: allowInsecureAuth enabled — token-only auth, no device pairing"));
+        }
     }
-    
-    if config.contains("allowInsecureAuth")
-        && (config.contains("\"allowInsecureAuth\":true")
-            || config.contains("\"allowInsecureAuth\": true")
-            || config.contains("\"allowInsecureAuth\" : true")) {
-        results.push(ScanResult::new("openclaw:controlui", ScanStatus::Warn,
-            "Control UI: allowInsecureAuth enabled — token-only auth, no device pairing"));
-    }
+    // If JSON parsing fails, skip silently (other checks will catch malformed config)
     
     if results.is_empty() {
         results.push(ScanResult::new("openclaw:controlui", ScanStatus::Pass,
