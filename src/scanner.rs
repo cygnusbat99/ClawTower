@@ -1643,6 +1643,66 @@ fn run_openclaw_audit(command: &str) -> Vec<ScanResult> {
     }
 }
 
+/// Check avahi-browse output for OpenClaw service advertisements (info leak).
+fn check_mdns_openclaw_leak(avahi_output: &str) -> ScanResult {
+    let openclaw_services: Vec<&str> = avahi_output.lines()
+        .filter(|l| l.to_lowercase().contains("openclaw") || l.to_lowercase().contains("clawav"))
+        .collect();
+    
+    if openclaw_services.is_empty() {
+        ScanResult::new("openclaw:mdns", ScanStatus::Pass,
+            "No OpenClaw/ClawAV services advertised via mDNS")
+    } else {
+        ScanResult::new("openclaw:mdns", ScanStatus::Warn,
+            &format!("OpenClaw services advertised via mDNS (info leak): {}",
+                openclaw_services.join("; ")))
+    }
+}
+
+/// Scan for mDNS info leaks by checking avahi-browse.
+fn scan_mdns_leaks() -> Vec<ScanResult> {
+    match Command::new("avahi-browse").args(&["-apt", "--no-db-lookup"]).output() {
+        Ok(output) => vec![check_mdns_openclaw_leak(
+            &String::from_utf8_lossy(&output.stdout))],
+        Err(_) => vec![ScanResult::new("openclaw:mdns", ScanStatus::Pass,
+            "avahi-browse not available — mDNS check skipped")],
+    }
+}
+
+/// Scan OpenClaw extensions directory for installed plugins.
+fn scan_extensions_dir(extensions_path: &str) -> Vec<ScanResult> {
+    let path = std::path::Path::new(extensions_path);
+    if !path.exists() {
+        return vec![ScanResult::new("openclaw:extensions", ScanStatus::Pass,
+            "No extensions directory — no plugins installed")];
+    }
+    
+    let mut results = Vec::new();
+    let mut count = 0;
+    
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                count += 1;
+                let pkg = entry.path().join("package.json");
+                if pkg.exists() {
+                    results.push(ScanResult::new("openclaw:extension",
+                        ScanStatus::Warn,
+                        &format!("Plugin installed: {} — verify trusted source",
+                            entry.file_name().to_string_lossy())));
+                }
+            }
+        }
+    }
+    
+    if results.is_empty() {
+        results.push(ScanResult::new("openclaw:extensions", ScanStatus::Pass,
+            &format!("{} extension dirs found, all clean", count)));
+    }
+    
+    results
+}
+
 fn scan_openclaw_security() -> Vec<ScanResult> {
     let mut results = Vec::new();
 
@@ -2026,5 +2086,50 @@ rules 0
         let results = parse_openclaw_audit_output(output);
         assert!(results[0].category.contains("openclaw:audit:dm_policy"));
         assert!(results[1].category.contains("openclaw:audit:browser_control"));
+    }
+
+    #[test]
+    fn test_mdns_openclaw_exposed() {
+        let output = "+;eth0;IPv4;OpenClaw Gateway;_http._tcp;local\n";
+        let result = check_mdns_openclaw_leak(output);
+        assert_eq!(result.status, ScanStatus::Warn);
+    }
+
+    #[test]
+    fn test_mdns_no_openclaw() {
+        let output = "+;eth0;IPv4;Printer;_ipp._tcp;local\n";
+        let result = check_mdns_openclaw_leak(output);
+        assert_eq!(result.status, ScanStatus::Pass);
+    }
+
+    #[test]
+    fn test_mdns_empty() {
+        let result = check_mdns_openclaw_leak("");
+        assert_eq!(result.status, ScanStatus::Pass);
+    }
+
+    #[test]
+    fn test_scan_extensions_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = scan_extensions_dir(dir.path().to_str().unwrap());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, ScanStatus::Pass);
+    }
+
+    #[test]
+    fn test_scan_extensions_missing_dir() {
+        let result = scan_extensions_dir("/nonexistent/extensions/12345");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, ScanStatus::Pass);
+    }
+
+    #[test]
+    fn test_scan_extensions_with_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin_dir = dir.path().join("my-plugin");
+        std::fs::create_dir(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("package.json"), "{}").unwrap();
+        let result = scan_extensions_dir(dir.path().to_str().unwrap());
+        assert!(result.iter().any(|r| r.status == ScanStatus::Warn));
     }
 }
