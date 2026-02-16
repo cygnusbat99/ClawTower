@@ -58,7 +58,7 @@ use config::Config;
 use alerts::{Alert, Severity};
 use aggregator::AggregatorConfig;
 use slack::SlackNotifier;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -373,7 +373,11 @@ async fn async_main() -> Result<()> {
         }
     }
 
-    let config = Config::load(&config_path)?;
+    let config_d = config_path.parent()
+        .unwrap_or(Path::new("/etc/clawav"))
+        .join("config.d");
+    let config = Config::load_with_overrides(&config_path, &config_d)?;
+    eprintln!("Config loaded (with overlays from {})", config_d.display());
     let notifier = SlackNotifier::new(&config.slack);
     let min_slack_level = Severity::from_str(&config.slack.min_slack_level);
 

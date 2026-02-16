@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use crate::secureclaw::SecureClawConfig;
+use crate::config_merge::merge_toml;
 
 /// Root configuration struct, deserialized from TOML.
 ///
@@ -559,6 +560,41 @@ impl Config {
         Ok(config)
     }
 
+    /// Load config from base path, then merge overlays from config_d directory.
+    /// Files in config_d are loaded in alphabetical order.
+    pub fn load_with_overrides(base_path: &Path, config_d: &Path) -> Result<Self> {
+        let content = std::fs::read_to_string(base_path)
+            .with_context(|| format!("Failed to read config: {}", base_path.display()))?;
+        let mut base: toml::Value = toml::from_str(&content)
+            .with_context(|| "Failed to parse base config")?;
+
+        if config_d.exists() && config_d.is_dir() {
+            let mut entries: Vec<_> = std::fs::read_dir(config_d)
+                .with_context(|| format!("Failed to read config.d: {}", config_d.display()))?
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.path().extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| ext == "toml")
+                        .unwrap_or(false)
+                })
+                .collect();
+            entries.sort_by_key(|e| e.file_name());
+
+            for entry in entries {
+                let overlay_content = std::fs::read_to_string(entry.path())
+                    .with_context(|| format!("Failed to read overlay: {}", entry.path().display()))?;
+                let overlay: toml::Value = toml::from_str(&overlay_content)
+                    .with_context(|| format!("Failed to parse overlay: {}", entry.path().display()))?;
+                merge_toml(&mut base, overlay);
+            }
+        }
+
+        let config: Config = base.try_into()
+            .with_context(|| "Failed to deserialize merged config")?;
+        Ok(config)
+    }
+
     pub fn save(&self, path: &Path) -> Result<()> {
         let content = toml::to_string_pretty(self)
             .with_context(|| "Failed to serialize config")?;
@@ -643,5 +679,164 @@ mod tests {
         let path2 = "/home/openclaw/.openclaw/workspace/SOUL.md";
         let excluded2 = config.exclude_content_scan.iter().any(|excl| path2.contains(excl));
         assert!(!excluded2, "SOUL.md should NOT be excluded from content scan");
+    }
+
+    #[test]
+    fn test_load_with_overrides_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let base_path = dir.path().join("config.toml");
+        let config_d = dir.path().join("config.d");
+        std::fs::create_dir(&config_d).unwrap();
+
+        std::fs::write(&base_path, r##"
+            [general]
+            watched_user = "1000"
+            min_alert_level = "info"
+            log_file = "/var/log/clawav/watchdog.log"
+
+            [slack]
+            webhook_url = "https://hooks.slack.com/test"
+            channel = "#devops"
+            min_slack_level = "critical"
+
+            [auditd]
+            log_path = "/var/log/audit/audit.log"
+            enabled = true
+
+            [network]
+            log_path = "/var/log/syslog"
+            log_prefix = "CLAWAV_NET"
+            enabled = true
+
+            [scans]
+            interval = 3600
+
+            [falco]
+            enabled = true
+            log_path = "/var/log/falco/falco_output.jsonl"
+        "##).unwrap();
+
+        std::fs::write(config_d.join("00-my-overrides.toml"), r##"
+            [falco]
+            enabled = false
+        "##).unwrap();
+
+        let config = Config::load_with_overrides(&base_path, &config_d).unwrap();
+        assert!(!config.falco.enabled, "Falco should be disabled by override");
+        assert_eq!(config.general.min_alert_level, "info");
+    }
+
+    #[test]
+    fn test_load_with_overrides_list_add() {
+        let dir = tempfile::tempdir().unwrap();
+        let base_path = dir.path().join("config.toml");
+        let config_d = dir.path().join("config.d");
+        std::fs::create_dir(&config_d).unwrap();
+
+        std::fs::write(&base_path, r##"
+            [general]
+            watched_user = "1000"
+            min_alert_level = "info"
+            log_file = "/var/log/clawav/watchdog.log"
+
+            [slack]
+            webhook_url = "https://hooks.slack.com/test"
+            channel = "#devops"
+            min_slack_level = "critical"
+
+            [auditd]
+            log_path = "/var/log/audit/audit.log"
+            enabled = true
+
+            [network]
+            log_path = "/var/log/syslog"
+            log_prefix = "CLAWAV_NET"
+            enabled = true
+
+            [netpolicy]
+            enabled = true
+            allowed_hosts = ["a.com"]
+
+            [scans]
+            interval = 3600
+        "##).unwrap();
+
+        std::fs::write(config_d.join("01-hosts.toml"), r##"
+            [netpolicy]
+            allowed_hosts_add = ["b.com"]
+        "##).unwrap();
+
+        let config = Config::load_with_overrides(&base_path, &config_d).unwrap();
+        assert!(config.netpolicy.allowed_hosts.contains(&"a.com".to_string()));
+        assert!(config.netpolicy.allowed_hosts.contains(&"b.com".to_string()));
+    }
+
+    #[test]
+    fn test_load_with_overrides_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let base_path = dir.path().join("config.toml");
+        let config_d = dir.path().join("config.d");
+        std::fs::create_dir(&config_d).unwrap();
+
+        std::fs::write(&base_path, r##"
+            [general]
+            watched_user = "1000"
+            min_alert_level = "info"
+            log_file = "/var/log/clawav/watchdog.log"
+
+            [slack]
+            webhook_url = "https://hooks.slack.com/test"
+            channel = "#devops"
+            min_slack_level = "critical"
+
+            [auditd]
+            log_path = "/var/log/audit/audit.log"
+            enabled = true
+
+            [network]
+            log_path = "/var/log/syslog"
+            log_prefix = "CLAWAV_NET"
+            enabled = true
+
+            [scans]
+            interval = 3600
+        "##).unwrap();
+
+        let config = Config::load_with_overrides(&base_path, &config_d).unwrap();
+        assert_eq!(config.general.watched_user, Some("1000".to_string()));
+    }
+
+    #[test]
+    fn test_load_with_overrides_no_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let base_path = dir.path().join("config.toml");
+
+        std::fs::write(&base_path, r##"
+            [general]
+            watched_user = "1000"
+            min_alert_level = "info"
+            log_file = "/var/log/clawav/watchdog.log"
+
+            [slack]
+            webhook_url = "https://hooks.slack.com/test"
+            channel = "#devops"
+            min_slack_level = "critical"
+
+            [auditd]
+            log_path = "/var/log/audit/audit.log"
+            enabled = true
+
+            [network]
+            log_path = "/var/log/syslog"
+            log_prefix = "CLAWAV_NET"
+            enabled = true
+
+            [scans]
+            interval = 3600
+        "##).unwrap();
+
+        let nonexistent = dir.path().join("config.d");
+        let config = Config::load_with_overrides(&base_path, &nonexistent).unwrap();
+        assert_eq!(config.general.watched_user, Some("1000".to_string()));
     }
 }
