@@ -170,6 +170,17 @@ if ! grep -q pam_cap /etc/pam.d/common-auth 2>/dev/null; then
     fi
 fi
 
+# ── 6b. Disable unnecessary services ─────────────────────────────────────────
+log "Disabling unnecessary network services..."
+if systemctl is-active --quiet rpcbind 2>/dev/null; then
+    systemctl stop rpcbind rpcbind.socket 2>/dev/null || true
+    systemctl disable rpcbind rpcbind.socket 2>/dev/null || true
+    systemctl mask rpcbind rpcbind.socket 2>/dev/null || true
+    log "  rpcbind disabled and masked (port 111)"
+else
+    log "  rpcbind already inactive"
+fi
+
 # ── 7. Kernel hardening via sysctl ───────────────────────────────────────────
 log "Setting kernel hardening parameters..."
 

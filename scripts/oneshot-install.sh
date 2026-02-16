@@ -1006,6 +1006,17 @@ APPARMOR
     apparmor_parser -r /etc/apparmor.d/clawav.deny-agent 2>/dev/null || warn "AppArmor profile load failed (non-fatal)"
 fi
 
+# ── Disable unnecessary services ──────────────────────────────────────────────
+log "Disabling unnecessary network services..."
+if systemctl is-active --quiet rpcbind 2>/dev/null; then
+    systemctl stop rpcbind rpcbind.socket 2>/dev/null || true
+    systemctl disable rpcbind rpcbind.socket 2>/dev/null || true
+    systemctl mask rpcbind rpcbind.socket 2>/dev/null || true
+    log "  rpcbind disabled and masked (port 111)"
+else
+    log "  rpcbind already inactive"
+fi
+
 # ── Kernel hardening ─────────────────────────────────────────────────────────
 log "Applying kernel hardening..."
 sysctl -w kernel.modules_disabled=1 2>/dev/null || warn "Could not disable module loading"
