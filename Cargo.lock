@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "clawav"
-version = "0.2.9-b"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "argon2",
