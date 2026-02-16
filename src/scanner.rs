@@ -1296,18 +1296,27 @@ fn scan_user_persistence_inner(crontab_override: Option<&str>) -> Vec<ScanResult
 
     // 2. Systemd user timers and services
     {
+        // OpenClaw's own services are legitimate, not persistence
+        const ALLOWED_USER_UNITS: &[&str] = &[
+            "openclaw.service",
+            "openclaw-gateway.service",
+            "openclaw-worker.service",
+            "default.target.wants",
+        ];
         let user_systemd = format!("{}/.config/systemd/user", home);
         let mut unexpected = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&user_systemd) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.ends_with(".timer") || name.ends_with(".service") {
+                if (name.ends_with(".timer") || name.ends_with(".service"))
+                    && !ALLOWED_USER_UNITS.iter().any(|a| name == *a)
+                {
                     unexpected.push(name);
                 }
             }
         }
         if unexpected.is_empty() {
-            results.push(ScanResult::new("user_persistence", ScanStatus::Pass, "No user systemd units"));
+            results.push(ScanResult::new("user_persistence", ScanStatus::Pass, "No unexpected user systemd units"));
         } else {
             results.push(ScanResult::new("user_persistence", ScanStatus::Fail,
                 &format!("Unexpected user systemd units: {}", unexpected.join(", "))));
