@@ -12,6 +12,12 @@
 #
 set -euo pipefail
 
+# ── Logging ──────────────────────────────────────────────────────────────────
+UNINSTALL_LOG="/var/log/clawav/uninstall-$(date +%Y%m%d-%H%M%S).log"
+mkdir -p /var/log/clawav 2>/dev/null || UNINSTALL_LOG="/tmp/clawav-uninstall-$(date +%Y%m%d-%H%M%S).log"
+exec > >(tee -a "$UNINSTALL_LOG") 2>&1
+echo "Uninstall log: $UNINSTALL_LOG"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -208,8 +214,9 @@ sudo rm -f /usr/local/bin/clawav-tray
 
 # ── 11. Warn about quarantined files ──────────────────────────────────────────
 if [[ -d /etc/clawav/quarantine ]] && [[ -n "$(ls -A /etc/clawav/quarantine 2>/dev/null)" ]]; then
-    warn "Quarantined files found in /etc/clawav/quarantine/:"
-    ls -la /etc/clawav/quarantine/ 2>/dev/null | head -10
+    QCOUNT=$(find /etc/clawav/quarantine -type f 2>/dev/null | wc -l)
+    warn "Quarantined files found in /etc/clawav/quarantine/ ($QCOUNT files):"
+    ls -la /etc/clawav/quarantine/ 2>/dev/null | head -10 || true
     echo ""
     warn "These are files ClawAV intercepted as threats."
     warn "They will be deleted. Copy them out now if you need them."
