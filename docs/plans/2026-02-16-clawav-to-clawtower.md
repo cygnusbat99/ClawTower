@@ -1,14 +1,14 @@
-# ClawAV → ClawGuard Rename Implementation Plan
+# ClawAV → ClawTower Rename Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Rename all references from ClawAV to ClawGuard across the entire codebase, including file names, system paths, and Cargo.toml configuration.
+**Goal:** Rename all references from ClawAV to ClawTower across the entire codebase, including file names, system paths, and Cargo.toml configuration.
 
 **Architecture:** Bulk sed find/replace in careful order (case-sensitive patterns, most-specific first to avoid double-replacement), then file renames, then Cargo.toml update, then build/test verification.
 
 **Tech Stack:** sed, git mv, cargo
 
-**Design doc:** `docs/plans/2026-02-16-clawav-to-clawguard-design.md`
+**Design doc:** `docs/plans/2026-02-16-clawav-to-clawtower-design.md`
 
 ---
 
@@ -29,41 +29,41 @@ cd /home/openclaw/.openclaw/workspace/projects/ClawAV
 FILES=$(grep -rl "clawav\|ClawAV\|CLAWAV" --include="*.rs" --include="*.toml" --include="*.yaml" --include="*.yml" --include="*.md" --include="*.sh" --include="*.json" --include="*.service" --include="*.desktop" --include="*.rules" --include="*.policy" --include="*.protect" . 2>/dev/null | grep -v target | grep -v .git)
 
 # Replace in order: longest/most-specific first
-# 1. CLAWAV → CLAWGUARD (env vars, constants)
-sed -i 's/CLAWAV/CLAWGUARD/g' $FILES
+# 1. CLAWAV → CLAWTOWER (env vars, constants)
+sed -i 's/CLAWAV/CLAWTOWER/g' $FILES
 
-# 2. ClawAV → ClawGuard (product name)
-sed -i 's/ClawAV/ClawGuard/g' $FILES
+# 2. ClawAV → ClawTower (product name)
+sed -i 's/ClawAV/ClawTower/g' $FILES
 
-# 3. clawav-tray → clawguard-tray (before generic clawav)
-sed -i 's/clawav-tray/clawguard-tray/g' $FILES
+# 3. clawav-tray → clawtower-tray (before generic clawav)
+sed -i 's/clawav-tray/clawtower-tray/g' $FILES
 
-# 4. clawav-ctl → clawguard-ctl
-sed -i 's/clawav-ctl/clawguard-ctl/g' $FILES
+# 4. clawav-ctl → clawtower-ctl
+sed -i 's/clawav-ctl/clawtower-ctl/g' $FILES
 
-# 5. clawav-deny → clawguard-deny (sudoers file)
-sed -i 's/clawav-deny/clawguard-deny/g' $FILES
+# 5. clawav-deny → clawtower-deny (sudoers file)
+sed -i 's/clawav-deny/clawtower-deny/g' $FILES
 
-# 6. clawav-tamper → clawguard-tamper (auditd key)
-sed -i 's/clawav-tamper/clawguard-tamper/g' $FILES
+# 6. clawav-tamper → clawtower-tamper (auditd key)
+sed -i 's/clawav-tamper/clawtower-tamper/g' $FILES
 
-# 7. clawav-config → clawguard-config (auditd key)
-sed -i 's/clawav-config/clawguard-config/g' $FILES
+# 7. clawav-config → clawtower-config (auditd key)
+sed -i 's/clawav-config/clawtower-config/g' $FILES
 
-# 8. clawav\.service → clawguard.service
-sed -i 's/clawav\.service/clawguard.service/g' $FILES
+# 8. clawav\.service → clawtower.service
+sed -i 's/clawav\.service/clawtower.service/g' $FILES
 
-# 9. clawav\.protect → clawguard.protect
-sed -i 's/clawav\.protect/clawguard.protect/g' $FILES
+# 9. clawav\.protect → clawtower.protect
+sed -i 's/clawav\.protect/clawtower.protect/g' $FILES
 
-# 10. clawav\.deny → clawguard.deny
-sed -i 's/clawav\.deny/clawguard.deny/g' $FILES
+# 10. clawav\.deny → clawtower.deny
+sed -i 's/clawav\.deny/clawtower.deny/g' $FILES
 
-# 11. clawav\.rules → clawguard.rules
-sed -i 's/clawav\.rules/clawguard.rules/g' $FILES
+# 11. clawav\.rules → clawtower.rules
+sed -i 's/clawav\.rules/clawtower.rules/g' $FILES
 
-# 12. Generic clawav → clawguard (catches remaining: binary name, paths, crate name)
-sed -i 's/clawav/clawguard/g' $FILES
+# 12. Generic clawav → clawtower (catches remaining: binary name, paths, crate name)
+sed -i 's/clawav/clawtower/g' $FILES
 ```
 
 **Step 2: Verify no clawav references remain (except clawsudo, secureclaw, openclaw)**
@@ -86,7 +86,7 @@ Expected: non-zero counts (clawsudo untouched)
 
 ```bash
 git add -A
-git commit -m "chore: rename ClawAV → ClawGuard (string replacements)"
+git commit -m "chore: rename ClawAV → ClawTower (string replacements)"
 ```
 
 ---
@@ -98,12 +98,12 @@ git commit -m "chore: rename ClawAV → ClawGuard (string replacements)"
 ```bash
 cd /home/openclaw/.openclaw/workspace/projects/ClawAV
 
-git mv src/bin/clawav-ctl.rs src/bin/clawguard-ctl.rs
-git mv src/bin/clawav-tray.rs src/bin/clawguard-tray.rs
-git mv openclawav.service clawguard.service
-git mv apparmor/etc.clawav.protect apparmor/etc.clawguard.protect
-git mv assets/clawav-tray.desktop assets/clawguard-tray.desktop
-git mv assets/com.clawav.policy assets/com.clawguard.policy
+git mv src/bin/clawav-ctl.rs src/bin/clawtower-ctl.rs
+git mv src/bin/clawav-tray.rs src/bin/clawtower-tray.rs
+git mv openclawav.service clawtower.service
+git mv apparmor/etc.clawav.protect apparmor/etc.clawtower.protect
+git mv assets/clawav-tray.desktop assets/clawtower-tray.desktop
+git mv assets/com.clawav.policy assets/com.clawtower.policy
 ```
 
 **Step 2: Update Cargo.toml binary paths and crate name**
@@ -112,11 +112,11 @@ The file already has string replacements from Task 1, but verify the `[[bin]]` s
 
 ```toml
 [package]
-name = "clawguard"
+name = "clawtower"
 version = "0.3.0"
 
 [[bin]]
-name = "clawguard"
+name = "clawtower"
 path = "src/main.rs"
 
 [[bin]]
@@ -124,13 +124,13 @@ name = "clawsudo"
 path = "src/bin/clawsudo.rs"
 
 [[bin]]
-name = "clawguard-tray"
-path = "src/bin/clawguard-tray.rs"
+name = "clawtower-tray"
+path = "src/bin/clawtower-tray.rs"
 required-features = ["tray"]
 
 [[bin]]
-name = "clawguard-ctl"
-path = "src/bin/clawguard-ctl.rs"
+name = "clawtower-ctl"
+path = "src/bin/clawtower-ctl.rs"
 required-features = ["tray"]
 ```
 
@@ -148,7 +148,7 @@ Expected: no output
 
 ```bash
 git add -A
-git commit -m "chore: rename ClawAV → ClawGuard (file renames)"
+git commit -m "chore: rename ClawAV → ClawTower (file renames)"
 ```
 
 ---
@@ -176,7 +176,7 @@ Expected: all tests pass (274+)
 **Step 3: Verify binary names**
 
 ```bash
-ls -la target/debug/clawguard target/debug/clawsudo
+ls -la target/debug/clawtower target/debug/clawsudo
 ```
 
 Expected: both binaries exist
@@ -184,30 +184,30 @@ Expected: both binaries exist
 **Step 4: Spot-check key files**
 
 ```bash
-# Config paths should reference clawguard
-grep "/etc/clawguard/" src/config.rs | head -5
+# Config paths should reference clawtower
+grep "/etc/clawtower/" src/config.rs | head -5
 
-# Auditd keys should be clawguard-*
-grep "clawguard-tamper\|clawguard-config" src/auditd.rs
+# Auditd keys should be clawtower-*
+grep "clawtower-tamper\|clawtower-config" src/auditd.rs
 
-# Service name should be clawguard
-grep "clawguard.service" src/scanner.rs
+# Service name should be clawtower
+grep "clawtower.service" src/scanner.rs
 ```
 
 **Step 5: Final grep for any remaining clawav**
 
 ```bash
-grep -rn "clawav" --include="*.rs" --include="*.toml" --include="*.yaml" --include="*.yml" --include="*.md" --include="*.sh" . | grep -v target | grep -v .git | grep -v clawsudo | grep -v secureclaw | grep -v openclaw | grep -v "ClawAV → ClawGuard"
+grep -rn "clawav" --include="*.rs" --include="*.toml" --include="*.yaml" --include="*.yml" --include="*.md" --include="*.sh" . | grep -v target | grep -v .git | grep -v clawsudo | grep -v secureclaw | grep -v openclaw | grep -v "ClawAV → ClawTower"
 ```
 
-Expected: no output (allow "ClawAV → ClawGuard" in rename commit messages/docs)
+Expected: no output (allow "ClawAV → ClawTower" in rename commit messages/docs)
 
 **Step 6: Commit any fixes, push**
 
 ```bash
 git add -A
 # Only commit if there are changes
-git diff --cached --quiet || git commit -m "fix: remaining ClawAV → ClawGuard references"
+git diff --cached --quiet || git commit -m "fix: remaining ClawAV → ClawTower references"
 ```
 
 ---
@@ -218,13 +218,13 @@ This task is done by the main session (not a subagent) because it requires human
 
 **Step 1: J.R. renames GitHub repo**
 
-Go to https://github.com/coltz108/ClawAV → Settings → General → Repository name → `ClawGuard` → Rename
+Go to https://github.com/coltz108/ClawAV → Settings → General → Repository name → `ClawTower` → Rename
 
 **Step 2: Update git remote**
 
 ```bash
 cd /home/openclaw/.openclaw/workspace/projects/ClawAV
-git remote set-url origin git@github.com:coltz108/ClawGuard.git
+git remote set-url origin git@github.com:coltz108/ClawTower.git
 ```
 
 **Step 3: Push and tag**
@@ -238,7 +238,7 @@ git push origin v0.3.0
 **Step 4: Rename local project directory**
 
 ```bash
-mv /home/openclaw/.openclaw/workspace/projects/ClawAV /home/openclaw/.openclaw/workspace/projects/ClawGuard
+mv /home/openclaw/.openclaw/workspace/projects/ClawAV /home/openclaw/.openclaw/workspace/projects/ClawTower
 ```
 
 **Step 5: Uninstall old ClawAV from Pi**
@@ -287,7 +287,7 @@ ls /etc/clawav/  # should not exist
 systemctl status clawav  # should say not found
 ```
 
-**Step 6: Install ClawGuard**
+**Step 6: Install ClawTower**
 
 Build and install from the renamed repo, or wait for the v0.3.0 GitHub release to use oneshot-install.
 
@@ -302,9 +302,9 @@ After all renames are done, restructure the README so Quick Start is immediately
 Current order:
 1. Header + badges + intro
 2. Table of Contents
-3. What is ClawGuard?
+3. What is ClawTower?
 4. Who It's For
-5. How ClawGuard Fits
+5. How ClawTower Fits
 6. Features (very long — 15+ subsections)
 7. Quick Start ← buried way down
 8. Configuration
@@ -318,7 +318,7 @@ New order:
 2. **Quick Start** ← move up immediately after intro
 3. Table of Contents (for everything below)
 4. Who It's For
-5. How ClawGuard Fits
+5. How ClawTower Fits
 6. Features
 7. Configuration
 8. Usage
@@ -326,30 +326,30 @@ New order:
 10. Contributing
 11. License
 
-Remove the separate "What is ClawGuard?" section — the intro paragraph already covers it. Fold any unique content from that section into the intro if needed.
+Remove the separate "What is ClawTower?" section — the intro paragraph already covers it. Fold any unique content from that section into the intro if needed.
 
 **Step 2: Update Table of Contents**
 
-Regenerate to match new section order. Remove the "What is ClawGuard?" entry.
+Regenerate to match new section order. Remove the "What is ClawTower?" entry.
 
 **Step 3: Update badge URLs**
 
-Change all badge/link URLs from `coltz108/ClawAV` to `coltz108/ClawGuard`:
+Change all badge/link URLs from `coltz108/ClawAV` to `coltz108/ClawTower`:
 
 ```markdown
-[![Build](https://img.shields.io/github/actions/workflow/status/coltz108/ClawGuard/ci.yml?branch=main&style=flat-square)](https://github.com/coltz108/ClawGuard/actions)
+[![Build](https://img.shields.io/github/actions/workflow/status/coltz108/ClawTower/ci.yml?branch=main&style=flat-square)](https://github.com/coltz108/ClawTower/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/coltz108/ClawGuard?style=flat-square)](https://github.com/coltz108/ClawGuard/releases)
+[![Release](https://img.shields.io/github/v/release/coltz108/ClawTower?style=flat-square)](https://github.com/coltz108/ClawTower/releases)
 ```
 
 Also update the oneshot install URL and git clone URL in Quick Start:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/coltz108/ClawGuard/main/scripts/oneshot-install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/coltz108/ClawTower/main/scripts/oneshot-install.sh | sudo bash
 ```
 
 ```bash
-git clone https://github.com/coltz108/ClawGuard.git
+git clone https://github.com/coltz108/ClawTower.git
 ```
 
 **Step 4: Update CI workflow filenames if referenced**
@@ -360,5 +360,5 @@ Check `.github/workflows/` for any references to `ClawAV` in workflow names or b
 
 ```bash
 git add README.md .github/
-git commit -m "docs: restructure README — Quick Start at top, ClawGuard branding"
+git commit -m "docs: restructure README — Quick Start at top, ClawTower branding"
 ```

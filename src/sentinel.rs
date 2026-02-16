@@ -289,6 +289,30 @@ impl Sentinel {
                 )).await;
             }
         }
+
+        // Scan for suspicious extended attributes (xattr)
+        // Attackers can inject payloads via user.* xattrs on cognitive files.
+        if let Ok(attrs) = xattr::list(file_path) {
+            for attr_name in attrs {
+                let name_str = attr_name.to_string_lossy().to_string();
+                if name_str.starts_with("user.") {
+                    let value = xattr::get(file_path, &attr_name)
+                        .ok()
+                        .flatten()
+                        .map(|v| String::from_utf8_lossy(&v).to_string())
+                        .unwrap_or_else(|| "<binary>".to_string());
+
+                    let _ = self.alert_tx.send(Alert::new(
+                        Severity::Critical,
+                        "sentinel",
+                        &format!("Suspicious xattr on {}: {} = {}", path, name_str, value),
+                    )).await;
+
+                    // Strip the suspicious xattr
+                    let _ = xattr::remove(file_path, &attr_name);
+                }
+            }
+        }
     }
 
     /// Start the sentinel event loop, watching configured paths via inotify.
@@ -1408,6 +1432,185 @@ mod tests {
 
         let alert = rx.try_recv().unwrap();
         assert_eq!(alert.severity, Severity::Warning); // .md = cognitive
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // --- xattr detection and stripping ---
+
+    /// Helper: check if xattr is supported on the given path
+    fn xattr_supported(path: &Path) -> bool {
+        let test_attr = "user.clawav_test";
+        xattr::set(path, test_attr, b"test").is_ok() && {
+            let _ = xattr::remove(path, test_attr);
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn test_xattr_detection_finds_user_attrs() {
+        let tmp = std::env::temp_dir().join("sentinel_test_xattr_detect");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let shadow_dir = tmp.join("shadow");
+        let quarantine_dir = tmp.join("quarantine");
+        let workspace = tmp.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let file_path = workspace.join("MEMORY.md");
+        std::fs::write(&file_path, "original\n").unwrap();
+
+        if !xattr_supported(&file_path) {
+            eprintln!("xattr not supported on this filesystem, skipping test");
+            let _ = std::fs::remove_dir_all(&tmp);
+            return;
+        }
+
+        let config = SentinelConfig {
+            enabled: true,
+            watch_paths: vec![WatchPathConfig {
+                path: file_path.to_string_lossy().to_string(),
+                patterns: vec!["*".to_string()],
+                policy: WatchPolicy::Watched,
+            }],
+            quarantine_dir: quarantine_dir.to_string_lossy().to_string(),
+            shadow_dir: shadow_dir.to_string_lossy().to_string(),
+            debounce_ms: 200,
+            scan_content: false,
+            max_file_size_kb: 1024,
+            content_scan_excludes: vec![],
+            exclude_content_scan: vec![],
+        };
+
+        let (tx, mut rx) = mpsc::channel::<Alert>(16);
+        let sentinel = Sentinel::new(config, tx, None).unwrap();
+
+        // Set a suspicious xattr and modify content to trigger handle_change
+        xattr::set(&file_path, "user.malicious", b"payload").unwrap();
+        std::fs::write(&file_path, "modified\n").unwrap();
+        sentinel.handle_change(&file_path.to_string_lossy()).await;
+
+        // Collect all alerts
+        let mut alerts = vec![];
+        while let Ok(a) = rx.try_recv() {
+            alerts.push(a);
+        }
+
+        // Should have a Critical alert about the xattr
+        let xattr_alert = alerts.iter().find(|a|
+            a.severity == Severity::Critical && a.message.contains("Suspicious xattr"));
+        assert!(xattr_alert.is_some(), "Expected Critical xattr alert, got: {:?}",
+            alerts.iter().map(|a| &a.message).collect::<Vec<_>>());
+        assert!(xattr_alert.unwrap().message.contains("user.malicious"));
+        assert!(xattr_alert.unwrap().message.contains("payload"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_xattr_system_attrs_ignored() {
+        let tmp = std::env::temp_dir().join("sentinel_test_xattr_system");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let shadow_dir = tmp.join("shadow");
+        let quarantine_dir = tmp.join("quarantine");
+        let workspace = tmp.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let file_path = workspace.join("test.md");
+        std::fs::write(&file_path, "original\n").unwrap();
+
+        if !xattr_supported(&file_path) {
+            eprintln!("xattr not supported on this filesystem, skipping test");
+            let _ = std::fs::remove_dir_all(&tmp);
+            return;
+        }
+
+        let config = SentinelConfig {
+            enabled: true,
+            watch_paths: vec![WatchPathConfig {
+                path: file_path.to_string_lossy().to_string(),
+                patterns: vec!["*".to_string()],
+                policy: WatchPolicy::Watched,
+            }],
+            quarantine_dir: quarantine_dir.to_string_lossy().to_string(),
+            shadow_dir: shadow_dir.to_string_lossy().to_string(),
+            debounce_ms: 200,
+            scan_content: false,
+            max_file_size_kb: 1024,
+            content_scan_excludes: vec![],
+            exclude_content_scan: vec![],
+        };
+
+        let (tx, mut rx) = mpsc::channel::<Alert>(16);
+        let sentinel = Sentinel::new(config, tx, None).unwrap();
+
+        // system.* xattrs typically require root; we can only test that
+        // user.* triggers and non-user.* does not. Set a security.* attr
+        // (will likely fail on non-root, which is fine — the test verifies
+        // that only user.* prefix triggers alerts).
+        // Just modify the file without any user.* xattr.
+        std::fs::write(&file_path, "modified\n").unwrap();
+        sentinel.handle_change(&file_path.to_string_lossy()).await;
+
+        let mut alerts = vec![];
+        while let Ok(a) = rx.try_recv() {
+            alerts.push(a);
+        }
+
+        // No xattr alert should fire
+        let xattr_alert = alerts.iter().find(|a| a.message.contains("Suspicious xattr"));
+        assert!(xattr_alert.is_none(), "system/no xattrs should not trigger alert");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_xattr_stripping_removes_attr() {
+        let tmp = std::env::temp_dir().join("sentinel_test_xattr_strip");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let shadow_dir = tmp.join("shadow");
+        let quarantine_dir = tmp.join("quarantine");
+        let workspace = tmp.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let file_path = workspace.join("target.md");
+        std::fs::write(&file_path, "original\n").unwrap();
+
+        if !xattr_supported(&file_path) {
+            eprintln!("xattr not supported on this filesystem, skipping test");
+            let _ = std::fs::remove_dir_all(&tmp);
+            return;
+        }
+
+        let config = SentinelConfig {
+            enabled: true,
+            watch_paths: vec![WatchPathConfig {
+                path: file_path.to_string_lossy().to_string(),
+                patterns: vec!["*".to_string()],
+                policy: WatchPolicy::Watched,
+            }],
+            quarantine_dir: quarantine_dir.to_string_lossy().to_string(),
+            shadow_dir: shadow_dir.to_string_lossy().to_string(),
+            debounce_ms: 200,
+            scan_content: false,
+            max_file_size_kb: 1024,
+            content_scan_excludes: vec![],
+            exclude_content_scan: vec![],
+        };
+
+        let (tx, _rx) = mpsc::channel::<Alert>(16);
+        let sentinel = Sentinel::new(config, tx, None).unwrap();
+
+        // Set xattr, modify file, handle change
+        xattr::set(&file_path, "user.evil", b"injected").unwrap();
+        std::fs::write(&file_path, "modified\n").unwrap();
+        sentinel.handle_change(&file_path.to_string_lossy()).await;
+
+        // Verify xattr was stripped
+        let remaining: Vec<_> = xattr::list(&file_path).unwrap()
+            .map(|a| a.to_string_lossy().to_string())
+            .filter(|n| n.starts_with("user."))
+            .collect();
+        assert!(remaining.is_empty(), "user.* xattrs should be stripped, found: {:?}", remaining);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

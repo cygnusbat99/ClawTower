@@ -70,6 +70,15 @@ cat > /etc/audit/rules.d/clawav.rules << EOF
 
 # Monitor module loading attempts
 -a always,exit -F arch=b64 -S init_module -S finit_module -k clawav_module
+
+# Monitor credential file reads (exfiltration / recon)
+-w /home/openclaw/.openclaw/agents/main/agent/auth-profiles.json -p r -k clawav_cred_read
+-w /home/openclaw/.aws/credentials -p r -k clawav_cred_read
+-w /home/openclaw/.aws/config -p r -k clawav_cred_read
+-w /home/openclaw/.ssh/id_ed25519 -p r -k clawav_cred_read
+-w /home/openclaw/.ssh/id_rsa -p r -k clawav_cred_read
+-w /home/openclaw/.env -p r -k clawav_cred_read
+-w /home/openclaw/.openclaw/gateway.yaml -p r -k clawav_cred_read
 EOF
 
 # Reload rules

@@ -26,6 +26,13 @@ pub const RECOMMENDED_AUDIT_RULES: &[&str] = &[
     "-w /etc/clawav/ -p wa -k clawav-config",
     // Monitor OpenClaw session log reads (prompt-injection / exfiltration vector)
     "-w /home/openclaw/.openclaw/agents/main/sessions/ -p r -k openclaw_session_read",
+    // Credential file read monitoring (T2.1)
+    "-w /home/openclaw/.openclaw/agents/main/agent/auth-profiles.json -p r -k clawav_cred_read",
+    "-w /home/openclaw/.aws/credentials -p r -k clawav_cred_read",
+    "-w /home/openclaw/.aws/config -p r -k clawav_cred_read",
+    "-w /home/openclaw/.ssh/id_ed25519 -p r -k clawav_cred_read",
+    "-w /home/openclaw/.ssh/id_rsa -p r -k clawav_cred_read",
+    "-w /home/openclaw/.openclaw/gateway.yaml -p r -k clawav_cred_read",
 ];
 
 use crate::alerts::{Alert, Severity};
@@ -321,6 +328,28 @@ pub fn check_tamper_event(event: &ParsedEvent) -> Option<Alert> {
             "auditd:tamper",
             &format!("🚨 CONFIG TAMPER: write/attr change on protected ClawAV file — {}", detail),
         ));
+    }
+    // Credential file read detection (T2.1)
+    if line.contains("key=\"clawav_cred_read\"") || line.contains("key=clawav_cred_read") {
+        let detail = event.file_path.as_deref()
+            .or(event.command.as_deref())
+            .unwrap_or(&line[..line.len().min(200)]);
+        let exe = extract_field(line, "exe").unwrap_or("unknown");
+        // Allowlist: OpenClaw itself legitimately reads auth-profiles.json and gateway.yaml
+        let is_openclaw = exe.contains("openclaw") || exe.contains("node");
+        if !is_openclaw {
+            return Some(Alert::new(
+                Severity::Critical,
+                "auditd:cred_read",
+                &format!("🔑 CREDENTIAL READ: {} accessed by {} — possible exfiltration", detail, exe),
+            ));
+        } else {
+            return Some(Alert::new(
+                Severity::Info,
+                "auditd:cred_read",
+                &format!("🔑 Credential access (expected): {} by {}", detail, exe),
+            ));
+        }
     }
     None
 }

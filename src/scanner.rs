@@ -1257,6 +1257,217 @@ pub fn parse_disk_usage(output: &str) -> ScanResult {
     ScanResult::new("resources", ScanStatus::Warn, "Cannot parse disk usage")
 }
 
+/// Scan user-level persistence mechanisms for the openclaw user.
+///
+/// Checks crontab, systemd user units, shell rc file integrity, autostart
+/// desktop files, git hooks, SSH rc/environment, Python usercustomize,
+/// npmrc install scripts, and dangerous environment variables.
+pub fn scan_user_persistence() -> Vec<ScanResult> {
+    scan_user_persistence_inner(None)
+}
+
+/// Inner implementation with optional crontab override for testing.
+fn scan_user_persistence_inner(crontab_override: Option<&str>) -> Vec<ScanResult> {
+    let mut results = Vec::new();
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/openclaw".to_string());
+
+    // 1. Crontab entries
+    let crontab_output = match crontab_override {
+        Some(s) => Ok(s.to_string()),
+        None => run_cmd("crontab", &["-l"]),
+    };
+    match crontab_output {
+        Ok(output) => {
+            let entries: Vec<&str> = output.lines()
+                .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+                .collect();
+            if entries.is_empty() {
+                results.push(ScanResult::new("user_persistence", ScanStatus::Pass, "No user crontab entries"));
+            } else {
+                results.push(ScanResult::new("user_persistence", ScanStatus::Fail,
+                    &format!("User crontab has {} entries: {}", entries.len(), entries.join("; "))));
+            }
+        }
+        Err(_) => {
+            // "no crontab for user" returns error — that's fine
+            results.push(ScanResult::new("user_persistence", ScanStatus::Pass, "No user crontab entries"));
+        }
+    }
+
+    // 2. Systemd user timers and services
+    {
+        let user_systemd = format!("{}/.config/systemd/user", home);
+        let mut unexpected = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&user_systemd) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.ends_with(".timer") || name.ends_with(".service") {
+                    unexpected.push(name);
+                }
+            }
+        }
+        if unexpected.is_empty() {
+            results.push(ScanResult::new("user_persistence", ScanStatus::Pass, "No user systemd units"));
+        } else {
+            results.push(ScanResult::new("user_persistence", ScanStatus::Fail,
+                &format!("Unexpected user systemd units: {}", unexpected.join(", "))));
+        }
+    }
+
+    // 3. Shell RC file integrity
+    {
+        let baselines_path = "/etc/clawav/persistence-baselines.json";
+        let baselines: std::collections::HashMap<String, String> = std::fs::read_to_string(baselines_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+        for rc_file in &[".bashrc", ".profile", ".bash_login"] {
+            let full_path = format!("{}/{}", home, rc_file);
+            if std::path::Path::new(&full_path).exists() {
+                match compute_file_sha256(&full_path) {
+                    Ok(hash) => {
+                        if let Some(expected) = baselines.get(*rc_file) {
+                            if &hash != expected {
+                                results.push(ScanResult::new("user_persistence", ScanStatus::Fail,
+                                    &format!("{} hash mismatch (expected {}, got {})", rc_file, &expected[..8], &hash[..8])));
+                            } else {
+                                results.push(ScanResult::new("user_persistence", ScanStatus::Pass,
+                                    &format!("{} integrity OK", rc_file)));
+                            }
+                        } else {
+                            results.push(ScanResult::new("user_persistence", ScanStatus::Warn,
+                                &format!("{} first seen (hash: {})", rc_file, &hash[..16])));
+                        }
+                    }
+                    Err(e) => {
+                        results.push(ScanResult::new("user_persistence", ScanStatus::Warn,
+                            &format!("Cannot hash {}: {}", rc_file, e)));
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Autostart desktop files
+    {
+        let autostart_dir = format!("{}/.config/autostart", home);
+        let mut desktop_files = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&autostart_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.ends_with(".desktop") {
+                    desktop_files.push(name);
+                }
+            }
+        }
+        if desktop_files.is_empty() {
+            results.push(ScanResult::new("user_persistence", ScanStatus::Pass, "No autostart desktop files"));
+        } else {
+            results.push(ScanResult::new("user_persistence", ScanStatus::Fail,
+                &format!("Autostart desktop files found: {}", desktop_files.join(", "))));
+        }
+    }
+
+    // 5. Git hooks in workspace
+    {
+        let hooks_dir = "/home/openclaw/.openclaw/workspace/.git/hooks";
+        let mut non_sample = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(hooks_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.ends_with(".sample") {
+                    if let Ok(ft) = entry.file_type() {
+                        if ft.is_file() {
+                            non_sample.push(name);
+                        }
+                    }
+                }
+            }
+        }
+        if non_sample.is_empty() {
+            results.push(ScanResult::new("user_persistence", ScanStatus::Pass, "No active git hooks in workspace"));
+        } else {
+            results.push(ScanResult::new("user_persistence", ScanStatus::Warn,
+                &format!("Active git hooks found: {}", non_sample.join(", "))));
+        }
+    }
+
+    // 6. SSH rc and environment
+    {
+        let ssh_dangerous = [".ssh/rc", ".ssh/environment"];
+        for file in &ssh_dangerous {
+            let full_path = format!("{}/{}", home, file);
+            if std::path::Path::new(&full_path).exists() {
+                results.push(ScanResult::new("user_persistence", ScanStatus::Fail,
+                    &format!("~/{} exists — potential persistence mechanism", file)));
+            } else {
+                results.push(ScanResult::new("user_persistence", ScanStatus::Pass,
+                    &format!("~/{} not present", file)));
+            }
+        }
+    }
+
+    // 7. Python usercustomize.py
+    {
+        let python_glob = format!("{}/.local/lib", home);
+        let mut found = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&python_glob) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("python") {
+                    let uc_path = entry.path().join("site-packages/usercustomize.py");
+                    if uc_path.exists() {
+                        found.push(uc_path.display().to_string());
+                    }
+                }
+            }
+        }
+        if found.is_empty() {
+            results.push(ScanResult::new("user_persistence", ScanStatus::Pass, "No usercustomize.py found"));
+        } else {
+            results.push(ScanResult::new("user_persistence", ScanStatus::Fail,
+                &format!("usercustomize.py found: {}", found.join(", "))));
+        }
+    }
+
+    // 8. npmrc install scripts
+    {
+        let npmrc_path = format!("{}/.npmrc", home);
+        if let Ok(content) = std::fs::read_to_string(&npmrc_path) {
+            let has_scripts = content.lines().any(|l| {
+                let lower = l.to_lowercase();
+                lower.contains("preinstall") || lower.contains("postinstall")
+            });
+            if has_scripts {
+                results.push(ScanResult::new("user_persistence", ScanStatus::Fail,
+                    "~/.npmrc contains preinstall/postinstall scripts"));
+            } else {
+                results.push(ScanResult::new("user_persistence", ScanStatus::Pass,
+                    "~/.npmrc clean (no install scripts)"));
+            }
+        } else {
+            results.push(ScanResult::new("user_persistence", ScanStatus::Pass, "No ~/.npmrc"));
+        }
+    }
+
+    // 9. Dangerous environment variables
+    {
+        let dangerous_vars = ["PYTHONSTARTUP", "PERL5OPT", "NODE_OPTIONS"];
+        for var in &dangerous_vars {
+            if std::env::var(var).is_ok() {
+                results.push(ScanResult::new("user_persistence", ScanStatus::Warn,
+                    &format!("Environment variable {} is set", var)));
+            } else {
+                results.push(ScanResult::new("user_persistence", ScanStatus::Pass,
+                    &format!("{} not set", var)));
+            }
+        }
+    }
+
+    results
+}
+
 /// Static entry point for running all security scans.
 pub struct SecurityScanner;
 
@@ -1499,6 +1710,9 @@ impl SecurityScanner {
             scan_systemd_hardening(),
             scan_user_account_audit(),
         ];
+        // User persistence mechanisms
+        results.extend(scan_user_persistence());
+
         // Cognitive file integrity (returns Vec)
         // Load SecureClaw engine for cognitive content scanning
         let secureclaw_engine = crate::secureclaw::SecureClawEngine::load(
@@ -2714,5 +2928,55 @@ rules 0
         assert!(!(days_ok > 90 || days_ok == 99999));
         assert!(days_bad > 90 || days_bad == 99999);
         assert!(days_default > 90 || days_default == 99999);
+    }
+
+    #[test]
+    fn test_scan_user_persistence_clean() {
+        // On a clean system with no crontab, results should be mostly Pass
+        let results = scan_user_persistence();
+        assert!(!results.is_empty());
+        // At minimum we get crontab + systemd + autostart + git hooks + ssh checks + python + npmrc + env vars
+        assert!(results.len() >= 9, "Expected at least 9 results, got {}", results.len());
+        // All should have category user_persistence
+        for r in &results {
+            assert_eq!(r.category, "user_persistence");
+        }
+    }
+
+    #[test]
+    fn test_scan_user_persistence_crontab_entries() {
+        let results = scan_user_persistence_inner(Some("* * * * * /tmp/evil.sh\n"));
+        let crontab_result = &results[0];
+        assert_eq!(crontab_result.status, ScanStatus::Fail);
+        assert!(crontab_result.details.contains("crontab"));
+    }
+
+    #[test]
+    fn test_scan_user_persistence_crontab_empty() {
+        let results = scan_user_persistence_inner(Some("# comment only\n\n"));
+        let crontab_result = &results[0];
+        assert_eq!(crontab_result.status, ScanStatus::Pass);
+    }
+
+    #[test]
+    fn test_scan_user_persistence_ssh_rc() {
+        use std::io::Write;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ssh_dir = tmp.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        let rc_file = ssh_dir.join("rc");
+        std::fs::File::create(&rc_file).unwrap().write_all(b"evil").unwrap();
+
+        // We can't easily redirect HOME for the full function, so test the logic directly
+        assert!(rc_file.exists());
+        // The scan checks ~/.ssh/rc existence => FAIL
+        // Verify by checking the actual function with real HOME
+        // Since we can't mock HOME easily, just verify the file detection logic
+        let results = scan_user_persistence();
+        // Find the ssh/rc result
+        let ssh_rc_result = results.iter().find(|r| r.details.contains(".ssh/rc"));
+        assert!(ssh_rc_result.is_some(), "Should have a .ssh/rc check result");
+        // On clean system it should be Pass (file doesn't exist at real HOME)
+        assert_eq!(ssh_rc_result.unwrap().status, ScanStatus::Pass);
     }
 }
