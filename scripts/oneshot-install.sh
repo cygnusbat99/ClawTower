@@ -498,7 +498,9 @@ fi
 
 # ── Create directories and install files (NOT locked down yet) ────────────────
 log "Setting up directories..."
-mkdir -p /etc/clawav/policies /etc/clawav/secureclaw /var/log/clawav /var/run/clawav
+mkdir -p /etc/clawav/policies /etc/clawav/secureclaw /etc/clawav/sentinel-shadow /etc/clawav/quarantine /var/log/clawav /var/run/clawav
+# Shadow and quarantine dirs should not be world-readable (info leak prevention)
+chmod 700 /etc/clawav/sentinel-shadow /etc/clawav/quarantine
 
 # Stop existing service if upgrading
 if systemctl is-active --quiet clawav 2>/dev/null; then

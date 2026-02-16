@@ -492,6 +492,58 @@ impl Default for SentinelConfig {
                     patterns: vec!["*-allowFrom.json".to_string()],
                     policy: WatchPolicy::Watched,
                 },
+                // Persistence-critical shell/profile files
+                WatchPathConfig {
+                    path: "/home/openclaw/.bashrc".to_string(),
+                    patterns: vec!["*".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+                WatchPathConfig {
+                    path: "/home/openclaw/.profile".to_string(),
+                    patterns: vec!["*".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+                WatchPathConfig {
+                    path: "/home/openclaw/.bash_login".to_string(),
+                    patterns: vec!["*".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+                WatchPathConfig {
+                    path: "/home/openclaw/.bash_logout".to_string(),
+                    patterns: vec!["*".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+                WatchPathConfig {
+                    path: "/home/openclaw/.npmrc".to_string(),
+                    patterns: vec!["*".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+                WatchPathConfig {
+                    path: "/home/openclaw/.ssh/rc".to_string(),
+                    patterns: vec!["*".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+                WatchPathConfig {
+                    path: "/home/openclaw/.ssh/environment".to_string(),
+                    patterns: vec!["*".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+                // Persistence directory watches (systemd user units, autostart, git hooks)
+                WatchPathConfig {
+                    path: "/home/openclaw/.config/systemd/user".to_string(),
+                    patterns: vec!["*.service".to_string(), "*.timer".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+                WatchPathConfig {
+                    path: "/home/openclaw/.config/autostart".to_string(),
+                    patterns: vec!["*.desktop".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+                WatchPathConfig {
+                    path: "/home/openclaw/.openclaw/workspace/.git/hooks".to_string(),
+                    patterns: vec!["*".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
             ],
             quarantine_dir: default_quarantine_dir(),
             shadow_dir: default_shadow_dir(),
@@ -1022,6 +1074,23 @@ mod tests {
         let reloaded = Config::load(&path).unwrap();
         assert_eq!(reloaded.general.min_alert_level, "info");
         assert_eq!(reloaded.scans.interval, 60);
+    }
+
+    #[test]
+    fn test_default_sentinel_includes_persistence_files() {
+        let config = SentinelConfig::default();
+        let paths: Vec<&str> = config.watch_paths.iter()
+            .map(|w| w.path.as_str()).collect();
+        assert!(paths.iter().any(|p| p.ends_with(".bashrc")));
+        assert!(paths.iter().any(|p| p.ends_with(".profile")));
+        assert!(paths.iter().any(|p| p.ends_with(".bash_login")));
+        assert!(paths.iter().any(|p| p.ends_with(".bash_logout")));
+        assert!(paths.iter().any(|p| p.ends_with(".npmrc")));
+        assert!(paths.iter().any(|p| p.ends_with(".ssh/rc")));
+        assert!(paths.iter().any(|p| p.ends_with(".ssh/environment")));
+        assert!(paths.iter().any(|p| p.contains("systemd/user")));
+        assert!(paths.iter().any(|p| p.contains("autostart")));
+        assert!(paths.iter().any(|p| p.contains(".git/hooks")));
     }
 
     #[test]

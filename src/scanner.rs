@@ -1005,10 +1005,33 @@ pub fn scan_user_account_audit() -> ScanResult {
         }
     }
 
+    // Check if watched user is in dangerous groups (docker/lxd = instant root)
+    if let Ok(group_content) = std::fs::read_to_string("/etc/group") {
+        const DANGEROUS_GROUPS: &[&str] = &["docker", "lxd", "lxc", "disk"];
+        for line in group_content.lines() {
+            let fields: Vec<&str> = line.split(':').collect();
+            if fields.len() >= 4 {
+                let group_name = fields[0];
+                if DANGEROUS_GROUPS.contains(&group_name) {
+                    let members: Vec<&str> = fields[3].split(',').filter(|s| !s.is_empty()).collect();
+                    if members.iter().any(|&m| m == "openclaw") {
+                        issues.push(format!("openclaw in dangerous group '{}' (privilege escalation vector)", group_name));
+                    }
+                }
+            }
+        }
+    }
+
     if issues.is_empty() {
         ScanResult::new("user_accounts", ScanStatus::Pass, "User account configuration secure")
     } else {
-        ScanResult::new("user_accounts", ScanStatus::Warn, &format!("User account issues: {}", issues.join("; ")))
+        // Dangerous groups are critical, not just warnings
+        let has_dangerous_group = issues.iter().any(|i| i.contains("dangerous group"));
+        if has_dangerous_group {
+            ScanResult::new("user_accounts", ScanStatus::Fail, &format!("User account issues: {}", issues.join("; ")))
+        } else {
+            ScanResult::new("user_accounts", ScanStatus::Warn, &format!("User account issues: {}", issues.join("; ")))
+        }
     }
 }
 

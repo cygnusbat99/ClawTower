@@ -329,6 +329,25 @@ pub fn check_tamper_event(event: &ParsedEvent) -> Option<Alert> {
             &format!("🚨 CONFIG TAMPER: write/attr change on protected ClawAV file — {}", detail),
         ));
     }
+    // Network connect() by suspicious binaries (T3.2)
+    // Catches script files making outbound connections (python3 script.py, node app.js)
+    if (line.contains("key=\"clawav_net\"") || line.contains("key=clawav_net"))
+        && event.syscall_name == "connect"
+    {
+        let exe = extract_field(line, "exe").unwrap_or("unknown");
+        let exe_base = exe.rsplit('/').next().unwrap_or(exe);
+        const NET_SUSPICIOUS_EXES: &[&str] = &[
+            "python3", "python", "node", "nodejs", "perl", "ruby", "php", "lua",
+        ];
+        if NET_SUSPICIOUS_EXES.iter().any(|&s| exe_base == s) {
+            return Some(Alert::new(
+                Severity::Warning,
+                "auditd:net_connect",
+                &format!("🌐 Network connect() by runtime: {} — possible script-based exfil", exe),
+            ));
+        }
+    }
+
     // Credential file read detection (T2.1)
     if line.contains("key=\"clawav_cred_read\"") || line.contains("key=clawav_cred_read") {
         let detail = event.file_path.as_deref()
@@ -1089,5 +1108,58 @@ mod tests {
     #[test]
     fn test_garbage_line_ignored() {
         assert!(parse_to_event("this is not an audit line", None).is_none());
+    }
+
+    // === T3.2: Network connect() by runtime ===
+
+    #[test]
+    fn test_connect_by_python_detected() {
+        let event = ParsedEvent {
+            syscall_name: "connect".to_string(),
+            command: None,
+            args: vec![],
+            file_path: None,
+            success: true,
+            raw: r#"type=SYSCALL msg=audit(1707849600.123:456): arch=c00000b7 syscall=203 success=yes exe="/usr/bin/python3" key="clawav_net""#.to_string(),
+            actor: Actor::Agent,
+            ppid_exe: None,
+        };
+        let alert = check_tamper_event(&event);
+        assert!(alert.is_some(), "connect() by python3 should trigger alert");
+        assert_eq!(alert.unwrap().severity, Severity::Warning);
+    }
+
+    #[test]
+    fn test_connect_by_node_detected() {
+        let event = ParsedEvent {
+            syscall_name: "connect".to_string(),
+            command: None,
+            args: vec![],
+            file_path: None,
+            success: true,
+            raw: r#"type=SYSCALL msg=audit(1707849600.123:456): arch=c00000b7 syscall=203 success=yes exe="/usr/bin/node" key="clawav_net""#.to_string(),
+            actor: Actor::Agent,
+            ppid_exe: None,
+        };
+        let alert = check_tamper_event(&event);
+        assert!(alert.is_some(), "connect() by node should trigger alert");
+    }
+
+    #[test]
+    fn test_connect_by_curl_not_double_flagged() {
+        // curl is already caught by behavior engine — connect() check skips it
+        let event = ParsedEvent {
+            syscall_name: "connect".to_string(),
+            command: None,
+            args: vec![],
+            file_path: None,
+            success: true,
+            raw: r#"type=SYSCALL msg=audit(1707849600.123:456): arch=c00000b7 syscall=203 success=yes exe="/usr/bin/curl" key="clawav_net""#.to_string(),
+            actor: Actor::Agent,
+            ppid_exe: None,
+        };
+        let alert = check_tamper_event(&event);
+        // curl is NOT in NET_SUSPICIOUS_EXES (already handled by behavior engine)
+        assert!(alert.is_none(), "curl connect() should not double-flag");
     }
 }
