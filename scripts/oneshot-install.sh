@@ -26,8 +26,8 @@ done
 # INSTALL DETECTION
 # ═══════════════════════════════════════════════════════════════════════════════
 HAS_BINARY=false; [[ -f /usr/local/bin/clawtower ]] && HAS_BINARY=true
-HAS_CONFIG=false; [[ -f /etc/clawtower/config.toml ]] && HAS_CONFIG=true
-HAS_KEY=false;    [[ -f /etc/clawtower/admin.key.hash ]] && HAS_KEY=true
+HAS_CONFIG=false; [[ -f /etc/clawtower/config.toml || -f /etc/clawav/config.toml ]] && HAS_CONFIG=true
+HAS_KEY=false;    [[ -f /etc/clawtower/admin.key.hash || -f /etc/clawav/admin.key.hash ]] && HAS_KEY=true
 HAD_ADMIN_KEY="$HAS_KEY"
 
 if [[ "$HAS_BINARY" == true && "$HAS_CONFIG" == true && "$HAS_KEY" == true ]]; then
@@ -339,7 +339,10 @@ TRAYEOF
     fi
 
     # Regenerate sudoers allowlist from latest template
-    AGENT_USERNAME=$(grep -oP 'watched_user = "\K[^"]+' /etc/clawtower/config.toml 2>/dev/null || echo "")
+    # Check both new and legacy config paths during migration period
+    AGENT_USERNAME=$(grep -oP 'watched_user = "\K[^"]+' /etc/clawtower/config.toml 2>/dev/null \
+        || grep -oP 'watched_user = "\K[^"]+' /etc/clawav/config.toml 2>/dev/null \
+        || echo "")
     # If watched_user is a UID, resolve to username
     if [[ "$AGENT_USERNAME" =~ ^[0-9]+$ ]]; then
         AGENT_USERNAME=$(getent passwd "$AGENT_USERNAME" | cut -d: -f1 || echo "")
