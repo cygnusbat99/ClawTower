@@ -43,12 +43,29 @@ pub async fn tail_falco_log(
     path: &Path,
     tx: mpsc::Sender<Alert>,
 ) -> Result<()> {
-    // Wait for log file to appear (Falco may not be running yet)
+    // Wait for log file to appear, but don't wait forever.
+    // If Falco isn't installed/running, give up after a few attempts.
+    let max_wait_attempts = 3;
+    let mut attempts = 0;
     while !path.exists() {
+        attempts += 1;
+        if attempts > max_wait_attempts {
+            let _ = tx.send(Alert::new(
+                Severity::Warning,
+                "falco",
+                &format!(
+                    "Falco log not found at {} after {}s — Falco may not be installed. \
+                     Disable with falco.enabled=false in config.",
+                    path.display(),
+                    max_wait_attempts * 30
+                ),
+            )).await;
+            return Ok(());
+        }
         let _ = tx.send(Alert::new(
             Severity::Info,
             "falco",
-            &format!("Waiting for Falco log at {}...", path.display()),
+            &format!("Waiting for Falco log at {} (attempt {}/{})...", path.display(), attempts, max_wait_attempts),
         )).await;
         sleep(Duration::from_secs(30)).await;
     }
