@@ -509,7 +509,6 @@ pub async fn tail_audit_log_full(
     file.seek(SeekFrom::End(0))?;
     let mut reader = BufReader::new(file);
     let mut line = String::new();
-    let mut connect_correlator = ConnectCorrelator::new();
 
     loop {
         line.clear();
@@ -519,46 +518,6 @@ pub async fn tail_audit_log_full(
             }
             Ok(_) => {
                 if let Some(event) = parse_to_event(&line, watched_users.as_deref()) {
-                    // Handle SOCKADDR records — correlate with pending connect() events
-                    if event.syscall_name == "_sockaddr" {
-                        if let Some(ref np) = netpolicy {
-                            if let Some(audit_id) = extract_audit_id(&line) {
-                                if let Some(saddr_hex) = extract_field(&line, "saddr") {
-                                    if let Some(sockaddr) = parse_sockaddr(saddr_hex) {
-                                        if let Some((_ce, exe, sa)) =
-                                            connect_correlator.complete_with_sockaddr(&audit_id, sockaddr)
-                                        {
-                                            if !is_local_or_loopback(&sa.ip) {
-                                                if let Some(alert) = np.check_connection(&sa.ip, sa.port) {
-                                                    let msg = format!(
-                                                        "🌐 Outbound connect to {}:{} by {} — {}",
-                                                        sa.ip, sa.port, exe, alert.message
-                                                    );
-                                                    let _ = tx.send(Alert::new(
-                                                        Severity::Warning,
-                                                        "auditd:netpolicy",
-                                                        &msg,
-                                                    )).await;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        continue; // Don't process SOCKADDR as a regular event
-                    }
-
-                    // Buffer connect() SYSCALLs for SOCKADDR correlation
-                    if event.syscall_name == "connect" && netpolicy.is_some() {
-                        if let Some(audit_id) = extract_audit_id(&line) {
-                            let exe = extract_field(&line, "exe")
-                                .unwrap_or("unknown")
-                                .to_string();
-                            connect_correlator.record_connect(audit_id, event.clone(), exe);
-                        }
-                    }
-
                     // Check for ClawTower tamper events (highest priority — fires for all users)
                     if let Some(tamper_alert) = check_tamper_event(&event) {
                         let _ = tx.send(tamper_alert).await;
