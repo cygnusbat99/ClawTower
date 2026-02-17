@@ -40,6 +40,8 @@ pub struct Config {
     #[serde(default)]
     pub netpolicy: NetPolicyConfig,
     #[serde(default)]
+    pub response: ResponseConfig,
+    #[serde(default)]
     pub ssh: SshConfig,
     #[serde(default)]
     pub sentinel: SentinelConfig,
@@ -357,6 +359,50 @@ impl Default for NetPolicyConfig {
             allowed_ports: vec![80, 443, 53],
             blocked_hosts: Vec::new(),
             mode: "blocklist".to_string(),
+        }
+    }
+}
+
+/// Configuration for the response engine — automated threat containment with human approval.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResponseConfig {
+    /// Enable the response engine.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Default timeout for human approval in seconds (default: 120 = 2 minutes).
+    #[serde(default = "default_response_timeout")]
+    pub timeout_secs: u64,
+
+    /// What to do with Warning-level alerts. Options: "gate", "alert_only", "auto_deny".
+    /// Critical alerts always use "gate" regardless of this setting.
+    #[serde(default = "default_warning_mode")]
+    pub warning_mode: String,
+
+    /// Directory containing response playbook YAML files.
+    #[serde(default = "default_playbook_dir")]
+    pub playbook_dir: String,
+
+    /// Message returned to agent when an action is denied.
+    #[serde(default = "default_deny_message")]
+    pub deny_message: String,
+}
+
+fn default_response_timeout() -> u64 { 120 }
+fn default_warning_mode() -> String { "gate".to_string() }
+fn default_playbook_dir() -> String { "/etc/clawtower/playbooks".to_string() }
+fn default_deny_message() -> String {
+    "Action blocked by ClawTower security policy. Contact administrator.".to_string()
+}
+
+impl Default for ResponseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_secs: default_response_timeout(),
+            warning_mode: default_warning_mode(),
+            playbook_dir: default_playbook_dir(),
+            deny_message: default_deny_message(),
         }
     }
 }
