@@ -642,7 +642,7 @@ async fn async_main() -> Result<()> {
         let interval = config.scans.interval;
         let oc_cfg = config.openclaw.clone();
         tokio::spawn(async move {
-            scanner::run_periodic_scans(interval, tx, scan_store, oc_cfg).await;
+            scanner::run_periodic_scans(interval, tx, scan_store, oc_cfg, config.scans.dedup_interval_secs).await;
         });
     }
 
@@ -692,21 +692,39 @@ async fn async_main() -> Result<()> {
     if headless {
         // Headless mode: just drain alerts and log them
         let mut alert_rx = alert_rx;
-        eprintln!("ClawTower running in headless mode (Ctrl+C to stop)");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        eprintln!("ClawTower running in headless mode (Ctrl+C or SIGTERM to stop)");
         loop {
             tokio::select! {
                 Some(alert) = alert_rx.recv() => {
                     eprintln!("[{}] [{}] {}", alert.severity, alert.source, alert.message);
                 }
                 _ = tokio::signal::ctrl_c() => {
-                    eprintln!("Shutting down...");
+                    eprintln!("Shutting down (SIGINT)...");
+                    break;
+                }
+                _ = sigterm.recv() => {
+                    eprintln!("Shutting down (SIGTERM)...");
                     break;
                 }
             }
         }
     } else {
-        // Run TUI (blocks until quit)
-        tui::run_tui(alert_rx, Some(config_path.clone())).await?;
+        // Run TUI (blocks until quit, also handles SIGTERM)
+        // Spawn a SIGTERM watcher that will cleanly exit the TUI
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to register SIGTERM handler");
+            sigterm.recv().await;
+            eprintln!("Shutting down (SIGTERM)...");
+            let _ = shutdown_tx.send(());
+        });
+
+        tokio::select! {
+            result = tui::run_tui(alert_rx, Some(config_path.clone())) => { result?; }
+            _ = &mut shutdown_rx => { /* SIGTERM received, exit cleanly */ }
+        }
     }
 
     // Restart the background service if we stopped it for TUI mode

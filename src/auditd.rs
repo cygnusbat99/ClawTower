@@ -561,7 +561,7 @@ pub async fn tail_audit_log_full(
 
                     // Run hardcoded behavior detection
                     if let Some((category, severity)) =
-                        crate::behavior::classify_behavior(&event, &extra_safe_hosts)
+                        crate::behavior::classify_behavior(&event)
                     {
                         let msg = format!(
                             "[BEHAVIOR:{}] {}",

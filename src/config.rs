@@ -47,6 +47,23 @@ pub struct Config {
     pub auto_update: AutoUpdateConfig,
     #[serde(default)]
     pub openclaw: OpenClawConfig,
+    #[serde(default)]
+    pub behavior: BehaviorConfig,
+}
+
+/// Behavior detection engine configuration.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct BehaviorConfig {
+    #[serde(default)]
+    pub safe_hosts: Vec<String>,
+}
+
+impl Default for BehaviorConfig {
+    fn default() -> Self {
+        Self {
+            safe_hosts: Vec::new(),
+        }
+    }
 }
 
 /// Auto-update configuration: checks GitHub releases periodically.
@@ -244,9 +261,13 @@ pub struct ScansConfig {
     /// Interval between persistence-specific scans in seconds (default: 300)
     #[serde(default = "default_persistence_interval")]
     pub persistence_interval: u64,
+    /// Dedup interval for repeated scanner findings in seconds (default: 3600)
+    #[serde(default = "default_dedup_interval")]
+    pub dedup_interval_secs: u64,
 }
 
 fn default_persistence_interval() -> u64 { 300 }
+fn default_dedup_interval() -> u64 { 3600 }
 
 /// HTTP REST API server configuration.
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -254,14 +275,17 @@ pub struct ApiConfig {
     pub enabled: bool,
     pub bind: String,
     pub port: u16,
+    #[serde(default)]
+    pub auth_token: String,
 }
 
 impl Default for ApiConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            bind: "0.0.0.0".to_string(),
+            bind: "127.0.0.1".to_string(),
             port: 18791,
+            auth_token: String::new(),
         }
     }
 }
