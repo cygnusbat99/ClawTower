@@ -64,12 +64,22 @@ pub enum ConfigFocus {
 pub enum FieldType {
     /// Free-form text input.
     Text,
-    /// Boolean toggle (Enter flips value).
-    Bool,
+    /// Selectable from a list of valid options (includes booleans).
+    Enum(Vec<String>),
     /// Numeric input.
     Number,
     /// Action button — Enter runs the associated command string.
     Action(String),
+}
+
+/// State for an active inline dropdown picker overlay.
+pub struct DropdownState {
+    /// Index of the field this dropdown is attached to.
+    pub field_index: usize,
+    /// Valid options to choose from.
+    pub options: Vec<String>,
+    /// Currently highlighted option index.
+    pub selected: usize,
 }
 
 /// Main TUI application state.
@@ -91,6 +101,7 @@ pub struct App {
     pub config_focus: ConfigFocus,
     pub config_editing: bool,
     pub config_edit_buffer: String,
+    pub config_dropdown: Option<DropdownState>,
     pub config_saved_message: Option<String>,
     // Sudo popup state
     pub sudo_popup: Option<SudoPopup>,
@@ -166,6 +177,7 @@ impl App {
             config_focus: ConfigFocus::Sidebar,
             config_editing: false,
             config_edit_buffer: String::new(),
+            config_dropdown: None,
             config_saved_message: None,
             sudo_popup: None,
             list_states: std::array::from_fn(|_| {
