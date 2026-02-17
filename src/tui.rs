@@ -20,8 +20,10 @@ use crossterm::{
 };
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, List, ListItem, Paragraph, Tabs},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs},
 };
+use zeroize::Zeroize;
+use std::collections::HashMap;
 use std::io;
 use tokio::sync::mpsc;
 use std::time::Duration;
@@ -92,6 +94,20 @@ pub struct App {
     pub config_saved_message: Option<String>,
     // Sudo popup state
     pub sudo_popup: Option<SudoPopup>,
+    // Scroll state per tab (tab index -> ListState)
+    pub list_states: [ListState; 5], // tabs 0-4 (alerts, network, falco, fim, system)
+    // Alert detail view
+    pub detail_alert: Option<Alert>,
+    // Search/filter
+    pub search_active: bool,
+    pub search_buffer: String,
+    pub search_filter: String, // committed search (applied on Enter)
+    // Pause alert feed
+    pub paused: bool,
+    // Cached tool installation status
+    pub tool_status_cache: HashMap<String, bool>,
+    // Muted sources (alerts from these sources are hidden)
+    pub muted_sources: Vec<String>,
 }
 
 /// State for the modal sudo password prompt overlay.
@@ -104,6 +120,12 @@ pub struct SudoPopup {
     pub message: String,
     /// Current progress state.
     pub status: SudoStatus,
+}
+
+impl Drop for SudoPopup {
+    fn drop(&mut self) {
+        self.password.zeroize();
+    }
 }
 
 /// Progress state of a sudo authentication attempt.
@@ -146,6 +168,18 @@ impl App {
             config_edit_buffer: String::new(),
             config_saved_message: None,
             sudo_popup: None,
+            list_states: std::array::from_fn(|_| {
+                let mut s = ListState::default();
+                s.select(Some(0));
+                s
+            }),
+            detail_alert: None,
+            search_active: false,
+            search_buffer: String::new(),
+            search_filter: String::new(),
+            paused: false,
+            tool_status_cache: HashMap::new(),
+            muted_sources: Vec::new(),
         }
     }
 
@@ -161,13 +195,34 @@ impl App {
     /// Rebuild the field list for the currently selected config section.
     pub fn refresh_fields(&mut self) {
         if let Some(ref config) = self.config {
+            // Ensure tool status is cached
+            let _ = self.is_tool_installed("falco");
+            let _ = self.is_tool_installed("samhain");
             let section = &self.config_sections[self.config_selected_section];
-            self.config_fields = get_section_fields(config, section);
-            // Reset field selection if necessary
+            self.config_fields = get_section_fields(config, section, &self.tool_status_cache);
             if self.config_selected_field >= self.config_fields.len() && !self.config_fields.is_empty() {
                 self.config_selected_field = 0;
             }
         }
+    }
+
+    /// Check and cache whether a tool is installed (runs `which` once per tool).
+    pub fn is_tool_installed(&mut self, tool: &str) -> bool {
+        if let Some(&cached) = self.tool_status_cache.get(tool) {
+            return cached;
+        }
+        let installed = std::process::Command::new("which")
+            .arg(tool)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        self.tool_status_cache.insert(tool.to_string(), installed);
+        installed
+    }
+
+    /// Invalidate cached tool status (e.g., after installing).
+    pub fn invalidate_tool_cache(&mut self) {
+        self.tool_status_cache.clear();
     }
 
     /// Handle a keyboard event, dispatching to the appropriate tab/panel handler.
@@ -204,9 +259,56 @@ impl App {
             self.config_saved_message = None;
         }
 
+        // Search mode input
+        if self.search_active {
+            match key {
+                KeyCode::Enter => {
+                    self.search_filter = self.search_buffer.clone();
+                    self.search_active = false;
+                }
+                KeyCode::Esc => {
+                    self.search_active = false;
+                    self.search_buffer.clear();
+                }
+                KeyCode::Backspace => { self.search_buffer.pop(); }
+                KeyCode::Char(c) => { self.search_buffer.push(c); }
+                _ => {}
+            }
+            return;
+        }
+
+        // Detail view mode
+        if self.detail_alert.is_some() {
+            match key {
+                KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
+                    self.detail_alert = None;
+                }
+                KeyCode::Char('m') => {
+                    // Mute/unmute the source of the viewed alert
+                    if let Some(ref alert) = self.detail_alert {
+                        let src = alert.source.clone();
+                        if let Some(pos) = self.muted_sources.iter().position(|s| s == &src) {
+                            self.muted_sources.remove(pos);
+                        } else {
+                            self.muted_sources.push(src);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match key {
-            KeyCode::Char('q') | KeyCode::Esc if !self.config_editing => self.should_quit = true,
-            // Config tab: Left/Right navigate sections, only Tab/BackTab switch tabs
+            KeyCode::Char('q') | KeyCode::Esc if !self.config_editing => {
+                // If search filter is active, Esc clears it first
+                if !self.search_filter.is_empty() && key == KeyCode::Esc {
+                    self.search_filter.clear();
+                    self.search_buffer.clear();
+                } else {
+                    self.should_quit = true;
+                }
+            }
             KeyCode::Tab if !self.config_editing => {
                 self.selected_tab = (self.selected_tab + 1) % self.tab_titles.len();
             }
@@ -229,7 +331,54 @@ impl App {
                 }
                 if self.selected_tab == 5 { self.config_focus = ConfigFocus::Sidebar; }
             }
-            // Config tab specific keys (including Left/Right for section nav)
+            // Alert list tabs (0-3): scroll, select, search, pause
+            KeyCode::Up if self.selected_tab <= 3 => {
+                let state = &mut self.list_states[self.selected_tab];
+                let i = state.selected().unwrap_or(0);
+                state.select(Some(i.saturating_sub(1)));
+            }
+            KeyCode::Down if self.selected_tab <= 3 => {
+                let state = &mut self.list_states[self.selected_tab];
+                let i = state.selected().unwrap_or(0);
+                state.select(Some(i + 1)); // ListState clamps to list len during render
+            }
+            KeyCode::Enter if self.selected_tab <= 3 => {
+                // Open detail view for selected alert
+                let tab = self.selected_tab;
+                let selected_idx = self.list_states[tab].selected().unwrap_or(0);
+                let source_filter: Option<&str> = match tab {
+                    1 => Some("network"),
+                    2 => Some("falco"),
+                    3 => Some("samhain"),
+                    _ => None,
+                };
+                let filtered: Vec<&Alert> = self.alert_store.alerts()
+                    .iter()
+                    .rev()
+                    .filter(|a| {
+                        if let Some(src) = source_filter {
+                            if a.source != src { return false; }
+                        }
+                        if self.muted_sources.contains(&a.source) { return false; }
+                        if !self.search_filter.is_empty() {
+                            let h = a.to_string().to_lowercase();
+                            if !h.contains(&self.search_filter.to_lowercase()) { return false; }
+                        }
+                        true
+                    })
+                    .collect();
+                if let Some(alert) = filtered.get(selected_idx) {
+                    self.detail_alert = Some((*alert).clone());
+                }
+            }
+            KeyCode::Char('/') if self.selected_tab <= 3 => {
+                self.search_active = true;
+                self.search_buffer = self.search_filter.clone();
+            }
+            KeyCode::Char(' ') if self.selected_tab <= 3 => {
+                self.paused = !self.paused;
+            }
+            // Config tab specific keys
             _ if self.selected_tab == 5 => self.handle_config_key(key, modifiers),
             _ => {}
         }
@@ -240,15 +389,37 @@ impl App {
             // Handle editing mode
             match key {
                 KeyCode::Enter => {
-                    // Confirm edit
-                    if let Some(ref mut config) = self.config {
-                        let section = &self.config_sections[self.config_selected_section];
-                        let field = &self.config_fields[self.config_selected_field];
-                        apply_field_to_config(config, section, &field.name, &self.config_edit_buffer);
-                        self.refresh_fields();
+                    // Validate before applying
+                    let field = &self.config_fields[self.config_selected_field];
+                    let value = &self.config_edit_buffer;
+
+                    let valid = match &field.field_type {
+                        FieldType::Number => value.parse::<u64>().is_ok(),
+                        FieldType::Bool => value == "true" || value == "false",
+                        FieldType::Text => true,
+                        FieldType::Action(_) => true,
+                    };
+
+                    if valid {
+                        if let Some(ref mut config) = self.config {
+                            let section = &self.config_sections[self.config_selected_section];
+                            let field = &self.config_fields[self.config_selected_field];
+                            apply_field_to_config(config, section, &field.name, &self.config_edit_buffer);
+                            self.refresh_fields();
+                        }
+                        self.config_editing = false;
+                        self.config_edit_buffer.clear();
+                    } else {
+                        self.config_saved_message = Some(format!(
+                            "❌ Invalid {}: \"{}\"",
+                            match &field.field_type {
+                                FieldType::Number => "number",
+                                FieldType::Bool => "boolean (true/false)",
+                                _ => "value",
+                            },
+                            value
+                        ));
                     }
-                    self.config_editing = false;
-                    self.config_edit_buffer.clear();
                 }
                 KeyCode::Esc => {
                     // Cancel edit
@@ -435,6 +606,7 @@ impl App {
                 if out.contains("CONFIG_SAVED") {
                     self.config_saved_message = Some("✅ Saved!".to_string());
                 } else if output.status.success() && !out.contains("INSTALL_FAILED") {
+                    self.invalidate_tool_cache();
                     self.config_saved_message = Some("✅ Installed! Refresh with Left/Right.".to_string());
                 } else if err.contains("incorrect password") || err.contains("Sorry, try again") {
                     self.config_saved_message = Some("❌ Wrong password".to_string());
@@ -454,7 +626,7 @@ fn nix_is_root() -> bool {
     unsafe { libc::getuid() == 0 }
 }
 
-fn get_section_fields(config: &Config, section: &str) -> Vec<ConfigField> {
+fn get_section_fields(config: &Config, section: &str, tool_cache: &HashMap<String, bool>) -> Vec<ConfigField> {
     match section {
         "general" => vec![
             ConfigField {
@@ -561,11 +733,7 @@ fn get_section_fields(config: &Config, section: &str) -> Vec<ConfigField> {
             },
         ],
         "falco" => {
-            let falco_installed = std::process::Command::new("which")
-                .arg("falco")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
+            let falco_installed = tool_cache.get("falco").copied().unwrap_or(false);
             let mut fields = vec![
                 ConfigField {
                     name: "enabled".to_string(),
@@ -597,11 +765,7 @@ fn get_section_fields(config: &Config, section: &str) -> Vec<ConfigField> {
             fields
         },
         "samhain" => {
-            let samhain_installed = std::process::Command::new("which")
-                .arg("samhain")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
+            let samhain_installed = tool_cache.get("samhain").copied().unwrap_or(false);
             let mut fields = vec![
                 ConfigField {
                     name: "enabled".to_string(),
@@ -813,91 +977,76 @@ fn apply_field_to_config(config: &mut Config, section: &str, field_name: &str, v
     }
 }
 
-fn render_alerts_tab(f: &mut Frame, area: Rect, app: &App) {
-    let items: Vec<ListItem> = app
-        .alert_store
-        .alerts()
+fn render_alert_list(
+    f: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    tab_index: usize,
+    source_filter: Option<&str>,
+    title: &str,
+) {
+    let alerts = app.alert_store.alerts();
+    let filtered: Vec<&Alert> = alerts
         .iter()
         .rev()
+        .filter(|a| {
+            if let Some(src) = source_filter {
+                if a.source != src {
+                    return false;
+                }
+            }
+            if app.muted_sources.contains(&a.source) {
+                return false;
+            }
+            if !app.search_filter.is_empty() {
+                let haystack = a.to_string().to_lowercase();
+                if !haystack.contains(&app.search_filter.to_lowercase()) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    let now = chrono::Local::now();
+    let items: Vec<ListItem> = filtered
+        .iter()
         .map(|alert| {
+            let age = now.signed_duration_since(alert.timestamp);
+            let age_str = if age.num_seconds() < 60 {
+                format!("{}s ago", age.num_seconds())
+            } else if age.num_minutes() < 60 {
+                format!("{}m ago", age.num_minutes())
+            } else if age.num_hours() < 24 {
+                format!("{}h ago", age.num_hours())
+            } else {
+                format!("{}d ago", age.num_days())
+            };
+
             let style = match alert.severity {
                 Severity::Critical => Style::default().fg(Color::Red).bold(),
                 Severity::Warning => Style::default().fg(Color::Yellow),
-                Severity::Info => Style::default().fg(Color::Gray),
+                Severity::Info => Style::default().fg(Color::Blue),
             };
-            ListItem::new(alert.to_string()).style(style)
+            ListItem::new(format!(
+                "{} {} [{}] {}",
+                age_str, alert.severity, alert.source, alert.message
+            ))
+            .style(style)
         })
         .collect();
+
+    let count = items.len();
+    let display_title = format!(" {} ({}) ", title, count);
+    let pause_indicator = if app.paused { " ⏸ PAUSED " } else { "" };
+    let full_title = format!("{}{}", display_title, pause_indicator);
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Alert Feed "));
-    f.render_widget(list, area);
-}
+        .block(Block::default().borders(Borders::ALL).title(full_title))
+        .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
+        .highlight_symbol("▶ ");
 
-fn render_network_tab(f: &mut Frame, area: Rect, app: &App) {
-    let network_alerts: Vec<ListItem> = app
-        .alert_store
-        .alerts()
-        .iter()
-        .rev()
-        .filter(|a| a.source == "network")
-        .map(|alert| {
-            let style = match alert.severity {
-                Severity::Critical => Style::default().fg(Color::Red).bold(),
-                Severity::Warning => Style::default().fg(Color::Yellow),
-                Severity::Info => Style::default().fg(Color::Gray),
-            };
-            ListItem::new(alert.to_string()).style(style)
-        })
-        .collect();
-
-    let list = List::new(network_alerts)
-        .block(Block::default().borders(Borders::ALL).title(" Network Activity "));
-    f.render_widget(list, area);
-}
-
-fn render_falco_tab(f: &mut Frame, area: Rect, app: &App) {
-    let falco_alerts: Vec<ListItem> = app
-        .alert_store
-        .alerts()
-        .iter()
-        .rev()
-        .filter(|a| a.source == "falco")
-        .map(|alert| {
-            let style = match alert.severity {
-                Severity::Critical => Style::default().fg(Color::Red).bold(),
-                Severity::Warning => Style::default().fg(Color::Yellow),
-                Severity::Info => Style::default().fg(Color::Gray),
-            };
-            ListItem::new(alert.to_string()).style(style)
-        })
-        .collect();
-
-    let list = List::new(falco_alerts)
-        .block(Block::default().borders(Borders::ALL).title(" Falco eBPF Alerts "));
-    f.render_widget(list, area);
-}
-
-fn render_fim_tab(f: &mut Frame, area: Rect, app: &App) {
-    let fim_alerts: Vec<ListItem> = app
-        .alert_store
-        .alerts()
-        .iter()
-        .rev()
-        .filter(|a| a.source == "samhain")
-        .map(|alert| {
-            let style = match alert.severity {
-                Severity::Critical => Style::default().fg(Color::Red).bold(),
-                Severity::Warning => Style::default().fg(Color::Yellow),
-                Severity::Info => Style::default().fg(Color::Gray),
-            };
-            ListItem::new(alert.to_string()).style(style)
-        })
-        .collect();
-
-    let list = List::new(fim_alerts)
-        .block(Block::default().borders(Borders::ALL).title(" File Integrity (Samhain) "));
-    f.render_widget(list, area);
+    f.render_stateful_widget(list, area, &mut app.list_states[tab_index]);
 }
 
 fn render_system_tab(f: &mut Frame, area: Rect, app: &App) {
@@ -905,7 +1054,7 @@ fn render_system_tab(f: &mut Frame, area: Rect, app: &App) {
     let warn_count = app.alert_store.count_by_severity(&Severity::Warning);
     let crit_count = app.alert_store.count_by_severity(&Severity::Critical);
 
-    let text = vec![
+    let mut text = vec![
         Line::from(vec![
             Span::styled(format!("ClawTower v{}", env!("CARGO_PKG_VERSION")), Style::default().fg(Color::Cyan).bold()),
         ]),
@@ -916,7 +1065,7 @@ fn render_system_tab(f: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled(format!("  ℹ️  Info:     {}", info_count), Style::default().fg(Color::Gray)),
+            Span::styled(format!("  ℹ️  Info:     {}", info_count), Style::default().fg(Color::Blue)),
         ]),
         Line::from(vec![
             Span::styled(format!("  ⚠️  Warnings: {}", warn_count), Style::default().fg(Color::Yellow)),
@@ -926,13 +1075,30 @@ fn render_system_tab(f: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::raw("Press "),
-            Span::styled("Tab", Style::default().fg(Color::Cyan)),
-            Span::raw(" to switch panels, "),
-            Span::styled("q", Style::default().fg(Color::Cyan)),
-            Span::raw(" to quit"),
+            Span::raw("Feed: "),
+            if app.paused {
+                Span::styled("⏸ PAUSED", Style::default().fg(Color::Yellow).bold())
+            } else {
+                Span::styled("▶ LIVE", Style::default().fg(Color::Green))
+            },
         ]),
     ];
+
+    if !app.muted_sources.is_empty() {
+        text.push(Line::from(vec![
+            Span::styled("Muted: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(app.muted_sources.join(", ")),
+        ]));
+    }
+
+    text.push(Line::from(""));
+    text.push(Line::from(vec![
+        Span::raw("Press "),
+        Span::styled("Tab", Style::default().fg(Color::Cyan)),
+        Span::raw(" to switch panels, "),
+        Span::styled("q", Style::default().fg(Color::Cyan)),
+        Span::raw(" to quit"),
+    ]));
 
     let paragraph = Paragraph::new(text)
         .block(Block::default().borders(Borders::ALL).title(" System Status "));
@@ -1025,31 +1191,156 @@ fn render_config_tab(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(fields_list, chunks[1]);
 }
 
-fn ui(f: &mut Frame, app: &App) {
+fn render_detail_view(f: &mut Frame, area: Rect, alert: &Alert) {
+    let now = chrono::Local::now();
+    let age = now.signed_duration_since(alert.timestamp);
+    let age_str = if age.num_seconds() < 60 {
+        format!("{} seconds ago", age.num_seconds())
+    } else if age.num_minutes() < 60 {
+        format!("{} minutes ago", age.num_minutes())
+    } else if age.num_hours() < 24 {
+        format!("{} hours ago", age.num_hours())
+    } else {
+        format!("{} days ago", age.num_days())
+    };
+
+    let severity_style = match alert.severity {
+        Severity::Critical => Style::default().fg(Color::Red).bold(),
+        Severity::Warning => Style::default().fg(Color::Yellow).bold(),
+        Severity::Info => Style::default().fg(Color::Blue).bold(),
+    };
+
+    let mut text = vec![
+        Line::from(vec![
+            Span::styled(format!(" {} ", alert.severity), severity_style),
+            Span::raw("  "),
+            Span::styled(alert.source.as_str(), Style::default().fg(Color::Cyan).bold()),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Timestamp: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(alert.timestamp.format("%Y-%m-%d %H:%M:%S%.3f").to_string()),
+            Span::styled(format!("  ({})", age_str), Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Source: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(alert.source.as_str()),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Severity: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{}", alert.severity), severity_style),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Message:", Style::default().fg(Color::DarkGray))),
+        Line::from(""),
+    ];
+
+    // Word-wrap the message to fit the area
+    let wrap_width = area.width.saturating_sub(4) as usize;
+    if wrap_width > 0 {
+        let msg_lines: Vec<Line> = alert
+            .message
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(wrap_width)
+            .map(|chunk| Line::from(format!("  {}", chunk.iter().collect::<String>())))
+            .collect();
+        text.extend(msg_lines);
+    }
+
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Alert Detail ")
+                .border_style(Style::default().fg(Color::Cyan)),
+        );
+    f.render_widget(paragraph, area);
+}
+
+fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(3),  // tab bar
+            Constraint::Min(0),    // content
+            Constraint::Length(1), // footer
+        ])
         .split(f.area());
 
-    // Tab bar
-    let titles: Vec<Line> = app.tab_titles.iter().map(|t| Line::from(t.as_str())).collect();
-    let tabs = Tabs::new(titles)
+    // Tab bar with dynamic counts
+    let alerts = app.alert_store.alerts();
+    let total = alerts.len();
+    let net_count = alerts.iter().filter(|a| a.source == "network").count();
+    let falco_count = alerts.iter().filter(|a| a.source == "falco").count();
+    let fim_count = alerts.iter().filter(|a| a.source == "samhain").count();
+
+    let tab_titles: Vec<Line> = vec![
+        Line::from(format!("Alerts ({})", total)),
+        Line::from(format!("Network ({})", net_count)),
+        Line::from(format!("Falco ({})", falco_count)),
+        Line::from(format!("FIM ({})", fim_count)),
+        Line::from("System".to_string()),
+        Line::from("Config".to_string()),
+    ];
+
+    let tabs = Tabs::new(tab_titles)
         .block(Block::default().borders(Borders::ALL).title(" 🛡️ ClawTower "))
         .select(app.selected_tab)
         .style(Style::default().fg(Color::White))
         .highlight_style(Style::default().fg(Color::Cyan).bold());
     f.render_widget(tabs, chunks[0]);
 
-    // Content area
-    match app.selected_tab {
-        0 => render_alerts_tab(f, chunks[1], app),
-        1 => render_network_tab(f, chunks[1], app),
-        2 => render_falco_tab(f, chunks[1], app),
-        3 => render_fim_tab(f, chunks[1], app),
-        4 => render_system_tab(f, chunks[1], app),
-        5 => render_config_tab(f, chunks[1], app),
-        _ => {}
+    // Content area — detail view overrides tab content
+    if let Some(ref alert) = app.detail_alert.clone() {
+        render_detail_view(f, chunks[1], &alert);
+    } else {
+        match app.selected_tab {
+            0 => render_alert_list(f, chunks[1], app, 0, None, "Alert Feed"),
+            1 => render_alert_list(f, chunks[1], app, 1, Some("network"), "Network Activity"),
+            2 => render_alert_list(f, chunks[1], app, 2, Some("falco"), "Falco eBPF Alerts"),
+            3 => render_alert_list(f, chunks[1], app, 3, Some("samhain"), "File Integrity"),
+            4 => render_system_tab(f, chunks[1], app),
+            5 => render_config_tab(f, chunks[1], app),
+            _ => {}
+        }
     }
+
+    // Footer / status bar
+    let footer_text = if app.search_active {
+        format!(" 🔍 Search: {}▌  (Enter to apply, Esc to cancel)", app.search_buffer)
+    } else if app.detail_alert.is_some() {
+        " Esc: back │ m: mute source".to_string()
+    } else {
+        match app.selected_tab {
+            0..=3 => {
+                let pause = if app.paused { "Space: resume" } else { "Space: pause" };
+                let filter = if !app.search_filter.is_empty() {
+                    format!(" │ Filter: \"{}\" (Esc clears)", app.search_filter)
+                } else {
+                    String::new()
+                };
+                format!(" Tab: switch │ ↑↓: scroll │ Enter: detail │ /: search │ {}{} │ q: quit", pause, filter)
+            }
+            4 => " Tab: switch │ q: quit".to_string(),
+            5 => {
+                if app.config_editing {
+                    " Enter: confirm │ Esc: cancel".to_string()
+                } else if app.config_focus == ConfigFocus::Fields {
+                    " ↑↓: navigate │ Enter: edit │ Backspace: sidebar │ Ctrl+S: save │ Tab: switch".to_string()
+                } else {
+                    " ↑↓: sections │ Enter: fields │ ←→: tabs │ Tab: switch │ q: quit".to_string()
+                }
+            }
+            _ => String::new(),
+        }
+    };
+
+    let footer = Paragraph::new(Line::from(footer_text))
+        .style(Style::default().fg(Color::DarkGray).bg(Color::Black));
+    f.render_widget(footer, chunks[2]);
 
     // Sudo popup overlay
     if let Some(ref popup) = app.sudo_popup {
@@ -1132,7 +1423,7 @@ pub async fn run_tui(mut alert_rx: mpsc::Receiver<Alert>, config_path: Option<Pa
     }
 
     loop {
-        terminal.draw(|f| ui(f, &app))?;
+        terminal.draw(|f| ui(f, &mut app))?;
 
         // Check for keyboard events (non-blocking)
         if event::poll(Duration::from_millis(100))? {
@@ -1143,9 +1434,11 @@ pub async fn run_tui(mut alert_rx: mpsc::Receiver<Alert>, config_path: Option<Pa
             }
         }
 
-        // Drain alert channel
-        while let Ok(alert) = alert_rx.try_recv() {
-            app.alert_store.push(alert);
+        // Drain alert channel (skip when paused — alerts buffer in channel)
+        if !app.paused {
+            while let Ok(alert) = alert_rx.try_recv() {
+                app.alert_store.push(alert);
+            }
         }
 
         if app.should_quit {

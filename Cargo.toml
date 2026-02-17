@@ -28,6 +28,7 @@ regex = "1"
 serde_yaml = "0.9"
 glob-match = "0.2"
 xattr = "1"
+zeroize = "1"
 ipnet = "2"
 ed25519-dalek = { version = "2", features = ["std"] }
 ksni = { version = "0.2", optional = true }
