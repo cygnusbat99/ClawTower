@@ -721,17 +721,20 @@ fn probe_intel_mpk(arch: Arch) -> bool {
     // Check CPUID leaf 7, ECX bit 3 (OSPKE) and bit 4 (PKU)
     #[cfg(target_arch = "x86_64")]
     {
-        // Use cpuid instruction via inline asm
+        // Use cpuid instruction via inline asm.
+        // rbx is reserved by LLVM, so we save/restore it manually.
         let ecx: u32;
         unsafe {
             std::arch::asm!(
+                "push rbx",
                 "mov eax, 7",
                 "xor ecx, ecx",
                 "cpuid",
+                "pop rbx",
                 out("ecx") ecx,
                 out("eax") _,
-                out("ebx") _,
                 out("edx") _,
+                options(nostack),
             );
         }
         ecx & (1 << 3) != 0 // OSPKE

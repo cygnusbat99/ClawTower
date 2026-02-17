@@ -4,6 +4,7 @@
 //! See design doc §6 (Layer 3) for full rationale and architecture.
 
 use crate::capabilities::PlatformCapabilities;
+#[allow(unused_imports)]
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -356,7 +357,7 @@ impl MemoryIntegrity {
 
         // Collect GOT/PLT paths for identification
         let got_regions: Vec<&MapRegion> = map.got_plt_regions();
-        let got_set: std::collections::HashSet<(u64, u64)> = got_regions
+        let _got_set: std::collections::HashSet<(u64, u64)> = got_regions
             .iter()
             .map(|r| (r.start, r.end))
             .collect();

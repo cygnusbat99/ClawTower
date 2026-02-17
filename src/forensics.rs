@@ -122,7 +122,7 @@ fn parse_hex_addr(hex: &str) -> Option<String> {
     if ip_hex.len() == 8 {
         // IPv4
         let ip_u32 = u32::from_str_radix(ip_hex, 16).ok()?;
-        let ip = Ipv4Addr::from(ip_u32.to_be());
+        let _ip = Ipv4Addr::from(ip_u32.to_be());
         // /proc/net/tcp stores IP in host byte order (little-endian on LE machines)
         // Reconstruct as network order
         let octets = [

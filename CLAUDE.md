@@ -997,7 +997,7 @@ To add defaults at compile time, modify `SentinelConfig::default()` in `src/conf
 
 ---
 
-## v0.4.0 Hardening Notes (Red Lobster v5)
+## v0.4.1 Hardening Notes (Red Lobster v5)
 
 Detection improvements driven by Red Lobster v5 adversarial test results (977 tests):
 
