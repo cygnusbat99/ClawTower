@@ -1402,7 +1402,9 @@ fn ui(f: &mut Frame, app: &mut App) {
             }
             4 => " Tab: switch │ q: quit".to_string(),
             5 => {
-                if app.config_editing {
+                if app.config_dropdown.is_some() {
+                    " ↑↓: select │ Enter: confirm │ Esc: cancel".to_string()
+                } else if app.config_editing {
                     " Enter: confirm │ Esc: cancel".to_string()
                 } else if app.config_focus == ConfigFocus::Fields {
                     " ↑↓: navigate │ Enter: edit │ Backspace: sidebar │ Ctrl+S: save │ Tab: switch".to_string()
