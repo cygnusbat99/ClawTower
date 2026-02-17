@@ -1592,18 +1592,15 @@ rules:
     #[test]
     fn test_injection_proc_mem() {
         let e = load_full_policy();
-        // "/proc/*/mem" in command_contains is literal — won't match /proc/1234/mem
-        // FINDING: glob wildcards in command_contains don't work (literal substring match)
+        // "/proc/*/mem" in command_contains now uses glob matching
         let ev = make_exec_event(&["cat", "/proc/*/mem"]);
         let v = e.evaluate(&ev).unwrap();
         assert_eq!(v.severity, Severity::Critical);
-        // But a real PID won't match:
+        // Real PID should also match now that command_contains supports globs
         let ev2 = make_exec_event(&["cat", "/proc/1234/mem"]);
         let v2 = e.evaluate(&ev2);
-        // FINDING: This is a bypass — real /proc/<pid>/mem access won't be detected
-        // by this command_contains rule because * is literal
-        assert!(v2.is_none() || v2.as_ref().unwrap().rule_name != "detect-process-injection",
-            "KNOWN BYPASS: /proc/<pid>/mem not caught by literal * in command_contains");
+        assert!(v2.is_some(), "/proc/<pid>/mem must be caught by glob pattern in command_contains");
+        assert_eq!(v2.unwrap().rule_name, "detect-process-injection");
     }
 
     // ── detect-timestomping ─────────────────────────────────────────

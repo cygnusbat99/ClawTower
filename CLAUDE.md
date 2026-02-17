@@ -89,7 +89,7 @@ Sources (auditd, network, falco, samhain, SSH, firewall, scanner, sentinel, prox
 | `admin.rs` | Admin key generation (Argon2), verification, Unix socket for authenticated commands |
 | `audit_chain.rs` | Hash-linked integrity log (SHA-256 chain, tamper-evident) |
 | `auditd.rs` | Audit log parser (SYSCALL/EXECVE/AVC records), aarch64 syscall table, user filtering |
-| `behavior.rs` | Hardcoded behavioral detection rules (~200 patterns across 5 threat categories) |
+| `behavior.rs` | Hardcoded behavioral detection rules (~270 patterns across 6 threat categories) |
 | `cognitive.rs` | Cognitive file protection — SHA-256 baselines for identity files (SOUL.md, etc.) |
 | `secureclaw.rs` | Pattern engine loading 4 JSON databases (injection, dangerous commands, privacy, supply chain) |
 | `sentinel.rs` | Real-time file watching via `notify` (inotify), shadow copies, quarantine, content scanning |
@@ -220,6 +220,7 @@ Hardcoded behavioral threat detection with 5 categories:
 3. **SecurityTamper** — disabling firewalls/services, persistence (crontab/systemd/init.d), log clearing, binary replacement, history tampering
 4. **Reconnaissance** — whoami, id, uname, env, reading .env/.aws/.ssh files
 5. **SideChannel** — mastik, flush-reload, prime-probe, perf_event_open
+6. **FinancialTheft** — crypto wallet file access, seed/mnemonic/private_key patterns, blockchain RPC calls (eth_sendTransaction etc.), crypto CLI tools (cast, forge, solana)
 
 Has allowlists for safe hosts, normal system operations (`ip neigh`, `crontab -l`), and build tool suppression (cargo/gcc child processes don't trigger LD_PRELOAD bypass alerts).
 
@@ -227,6 +228,8 @@ Has allowlists for safe hosts, normal system operations (`ip neigh`, `crontab -l
 - **Persistence expansion:** `npm install -g`, `python -m pip install`, `crontab` (enhanced), `at` command scheduling
 - **Exfiltration expansion:** 9→15 binaries (added `dd`, `rsync`, `scp`, `sftp`, `openssl s_client`, `ncat`), `dd` syntax patterns, tightened Node.js allowlist
 - **`connect()` syscall monitoring:** auditd rules for syscall 203 (aarch64) on watched users, catching outbound connections at kernel level
+
+**Tinman eval coverage (v0.3.3):** MCP config tampering detection, destructive external action patterns (aws/gcloud/kubectl/terraform destroy, gh pr create), external messaging tool alerts.
 
 LD_PRELOAD env var detection added to `classify_behavior()` — checks raw audit record for `LD_PRELOAD=` before command parsing. Suppresses for ClawTower's own guard, build tool binaries/parents.
 

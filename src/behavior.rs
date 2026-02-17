@@ -278,6 +278,7 @@ const PERSISTENCE_WRITE_PATHS: &[&str] = &[
     "/etc/init.d/",
     "/etc/systemd/system/",
     "/usr/lib/systemd/system/",
+    ".config/systemd/user/",
     "/etc/profile.d/",
     "/etc/ld.so.preload",
     "sitecustomize.py",

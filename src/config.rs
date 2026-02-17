@@ -441,7 +441,6 @@ fn default_content_scan_excludes() -> Vec<String> {
 fn default_exclude_content_scan() -> Vec<String> {
     vec![
         "superpowers/skills".to_string(),
-        ".openclaw/workspace".to_string(),
     ]
 }
 
