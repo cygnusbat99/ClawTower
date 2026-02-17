@@ -239,9 +239,14 @@ impl Default for SamhainConfig {
 /// Periodic security scanner configuration.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ScansConfig {
-    /// Interval between scan cycles in seconds
+    /// Interval between full scan cycles in seconds
     pub interval: u64,
+    /// Interval between persistence-specific scans in seconds (default: 300)
+    #[serde(default = "default_persistence_interval")]
+    pub persistence_interval: u64,
 }
+
+fn default_persistence_interval() -> u64 { 300 }
 
 /// HTTP REST API server configuration.
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -542,6 +547,34 @@ impl Default for SentinelConfig {
                 WatchPathConfig {
                     path: "/home/openclaw/.openclaw/workspace/.git/hooks".to_string(),
                     patterns: vec!["*".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+                // System-level persistence paths (cron, at)
+                WatchPathConfig {
+                    path: "/var/spool/cron/crontabs".to_string(),
+                    patterns: vec!["*".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+                WatchPathConfig {
+                    path: "/var/spool/at".to_string(),
+                    patterns: vec!["*".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+                // Python sitecustomize.py persistence
+                WatchPathConfig {
+                    path: "/usr/lib/python3/dist-packages".to_string(),
+                    patterns: vec!["sitecustomize.py".to_string(), "usercustomize.py".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+                WatchPathConfig {
+                    path: "/usr/local/lib/python3.11/dist-packages".to_string(),
+                    patterns: vec!["sitecustomize.py".to_string(), "usercustomize.py".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+                // npm package-lock persistence indicator
+                WatchPathConfig {
+                    path: "/home/openclaw/.node_modules".to_string(),
+                    patterns: vec![".package-lock.json".to_string()],
                     policy: WatchPolicy::Watched,
                 },
             ],
