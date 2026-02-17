@@ -181,7 +181,7 @@ async fn handle(
             let resp = StatusResponse {
                 status: "running",
                 uptime_seconds: start_time.elapsed().as_secs(),
-                version: "0.3.0",
+                version: "0.4.0",
                 modules: Modules {
                     auditd: true,
                     network: true,

@@ -997,6 +997,22 @@ To add defaults at compile time, modify `SentinelConfig::default()` in `src/conf
 
 ---
 
+## v0.4.0 Hardening Notes (Red Lobster v5)
+
+Detection improvements driven by Red Lobster v5 adversarial test results (977 tests):
+
+- **Auditd inode staleness fix:** Rule reload interval reduced from 300s to 60s, fixing Node.js/Ruby credential read bypasses via stale file watches.
+- **Interpreter credential path fallback:** Behavior layer detects when interpreters (python/node/ruby/perl/php/lua) reference credential paths in EXECVE args, independent of auditd file watches.
+- **sendfile/copy_file_range/sendto from interpreters:** Catches shutil.copyfile() bypass and UDP exfil (DNS TXT tunneling, ctypes raw sockets).
+- **Kernel module loading:** `insmod`/`modprobe` detected as Critical PrivilegeEscalation.
+- **Process identity masking:** `prctl(PR_SET_NAME)` in interpreter args detected as SecurityTamper.
+- **memfd_create:** Fileless execution detected at both EXECVE (interpreter args) and syscall level.
+- **Cognitive integrity checks:** Sentinel detects null byte injection, Cyrillic homoglyphs, non-breaking spaces, zero-width characters, BOM injection, and variation selectors in watched files.
+- **sudo + interpreter chains:** `sudo python3 -c "os.setuid(0)"` and `sudo node -e "createServer()"` escalated to Critical.
+- **Audit log poll latency:** Reduced from 500ms to 200ms for tighter Red Lobster 3s check window compliance.
+
+---
+
 ## v0.3.3 Hardening Notes (Red Lobster v4)
 
 Key lessons and gotchas from the Red Lobster v4 adversarial testing:

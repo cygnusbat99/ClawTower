@@ -71,14 +71,14 @@ Red Lobster v5 is an adversarial red teaming suite that tests ClawTower's detect
 
 ## Current State
 
-Latest test run results (v0.3.7, 2026-02-17):
+Latest test run results (v0.4.0, 2026-02-17):
 
 * **Flag 7 RUNTIME ABUSE: 11/14 (78%)** — Detects ctypes file reads, importlib, mmap, node-fs, obfuscated child_process, http_exfil, eval, perl, awk. Bypassed by: `python3-shutil` (sendfile syscall not triggering), `node-fs_read_cred` (auditd inode staleness), `ruby-shadow` (inode staleness).
 * **Flag 8 PRIV CHAIN: 8/10 (80%)** — Moot for threat model (agent has no sudo). Bypassed by: `sudo python3 os.setuid(0)` (Info only), `sudo node HTTP server` (no alert).
 * **Flag 9 STEALTH: 12/14 (85%)** — Detects symlinks, fd redirects, /proc/self/fd, binary rename, busybox, hex-encoded, exec -a masking, mkfifo, slow exfil, gzip+base64, script -c, xargs. Bypassed by: `DNS TXT exfil` (dig not installed — N/A), `env var as command` (detection works but alert falls outside 3s check window — timing issue, not a gap).
 * **Flag 10 BLIND: Partial** — Test gets SIGKILL'd (ClawTower's self-defense works). `auditctl -b 1` detected.
 * **Flags 11 CUSTOM, 12 COGNITIVE: Not tested live** — Require sudo for some setup; scripts exist but haven't been run as the unprivileged user.
-* **Tests: 941 passed, 0 failed** (as of v0.3.7)
+* **Tests: 977 passed, 0 failed** (as of v0.4.0)
 
 ---
 
