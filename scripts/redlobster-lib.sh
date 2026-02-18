@@ -97,18 +97,21 @@ rl_summary() {
         pct=$(( (DETECTED * 100) / TOTAL ))
     fi
 
+    local known_count="${KNOWN:-0}"
+
     echo ""
     echo "═══════════════════════════════════════════════════"
     echo "  📊 Results: $DETECTED/$TOTAL detected ($pct%)"
-    echo "  ✅ Detected: $DETECTED | ❌ Bypassed: $BYPASSED"
+    echo "  ✅ Detected: $DETECTED | ❌ Bypassed: $BYPASSED | ⚠️ Known: $known_count"
     echo "═══════════════════════════════════════════════════"
 
     {
         echo ""
         echo "## Summary"
-        echo "- **Total:** $TOTAL"
+        echo "- **Total (scored):** $TOTAL"
         echo "- **Detected:** $DETECTED ($pct%)"
         echo "- **Bypassed:** $BYPASSED"
+        echo "- **Known limitations:** $known_count (shell-level, not scored)"
     } >> "$FLAG_RESULTS"
 
     echo ""

@@ -358,6 +358,8 @@ impl Sentinel {
             return;
         }
 
+        let policy = policy_for_path(&self.config, path);
+
         // Persistence-critical directory detection: new files in these dirs
         // indicate potential attacker persistence and warrant CRIT alerts.
         if Self::is_persistence_critical(path) {
@@ -370,11 +372,18 @@ impl Sentinel {
             return;
         }
 
-        // First time seeing this file — initialize shadow, don't treat as threat
+        // First time seeing this file — initialize shadow
         if !shadow_exists {
             let _ = Self::write_shadow_hardened(&shadow, current.as_bytes());
+            // Protected files: first modification without a baseline is Critical
+            // (the file was changed before sentinel could establish a shadow)
+            let severity = if policy == Some(WatchPolicy::Protected) {
+                Severity::Critical
+            } else {
+                Severity::Info
+            };
             let _ = self.alert_tx.send(Alert::new(
-                Severity::Info,
+                severity,
                 "sentinel",
                 &format!("New watched file detected, shadow initialized: {}", path),
             )).await;
@@ -385,8 +394,6 @@ impl Sentinel {
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string());
         let diff = generate_unified_diff(&previous, &current, &fname);
-
-        let policy = policy_for_path(&self.config, path);
 
         // Scan content if enabled — but skip for Watched files (workspace docs like
         // MEMORY.md legitimately contain IPs, paths, credentials references, etc.

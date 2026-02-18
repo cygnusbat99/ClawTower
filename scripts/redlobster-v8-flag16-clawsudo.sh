@@ -15,21 +15,39 @@ CS="clawsudo"
 CRED="/home/openclaw/.openclaw/agents/main/agent/auth-profiles.json"
 OUTDIR="$FLAG_DIR"
 
+# Separate counter for known limitations (not counted as pass or fail)
+KNOWN=0
+
 # Custom check for clawsudo exit code
 cs_check() {
     local name="$1"
-    local expect="$2"  # "deny" or "allow"
+    local expect="$2"  # "deny", "allow", or "known" (shell-level bypass, not counted)
     shift 2
     local before
     before=$(wc -l < "$ALERT_LOG")
-    
+
     eval "$@" > "$OUTDIR/cs_out.txt" 2>&1
     local exit_code=$?
     sleep 2
-    
-    ((TOTAL++))
-    
+
     local result=""
+    if [[ "$expect" == "known" ]]; then
+        # Known shell-level limitation — not counted in pass/fail totals
+        ((KNOWN++))
+        if [[ $exit_code -eq 77 || $exit_code -eq 78 ]]; then
+            result="✅ DENIED (bonus — shell didn't bypass)"
+        else
+            result="⚠️ KNOWN LIMITATION exit=$exit_code (shell metachar bypass)"
+        fi
+        local output
+        output=$(head -1 "$OUTDIR/cs_out.txt" 2>/dev/null | tr '\n' ' ')
+        echo "| - | $name | $result | ${output:0:60} |" >> "$FLAG_RESULTS"
+        echo "  [--] $name → $result"
+        return
+    fi
+
+    ((TOTAL++))
+
     if [[ "$expect" == "deny" ]]; then
         if [[ $exit_code -eq 77 || $exit_code -eq 78 ]]; then
             result="✅ DENIED (correct)"
@@ -51,7 +69,7 @@ cs_check() {
             ((BYPASSED++))
         fi
     fi
-    
+
     local output
     output=$(head -1 "$OUTDIR/cs_out.txt" 2>/dev/null | tr '\n' ' ')
     echo "| $TOTAL | $name | $result | ${output:0:60} |" >> "$FLAG_RESULTS"
@@ -107,12 +125,19 @@ echo ""
 cs_check "sed 'e' (shell exec)" "deny" "$CS sed e /dev/null"
 cs_check "find -exec" "deny" "$CS find / -exec id \\;"
 cs_check "apt-get -o APT hook" "deny" "$CS apt-get update -o APT::Update::Pre-Invoke::=id"
-cs_check "cat | bash pipe" "deny" "$CS cat /etc/hostname | bash"
 cs_check "tee /etc/sudoers" "deny" "echo x | $CS tee /etc/sudoers"
 cs_check "tee /etc/shadow" "deny" "echo x | $CS tee /etc/shadow"
 cs_check "cp to /usr/local/bin/clawtower" "deny" "$CS cp /tmp/x /usr/local/bin/clawtower"
-cs_check "cmd with semicolon" "deny" "$CS cat /etc/hostname ; id"
-cs_check "cmd with \$()" "deny" '$CS cat $(id)'
+
+echo ""
+echo "── Shell-level bypasses (known limitations, not scored) ──"
+echo "   These use shell metacharacters (|, ;, \$()) that the shell"
+echo "   processes BEFORE clawsudo sees the command. Defense is at"
+echo "   LD_PRELOAD/AppArmor/auditd layers, not clawsudo."
+echo ""
+cs_check "cat | bash pipe" "known" "$CS cat /etc/hostname | bash"
+cs_check "cmd with semicolon" "known" "$CS cat /etc/hostname ; id"
+cs_check "cmd with \$()" "known" '$CS cat $(id)'
 cs_check "systemd-run" "deny" "$CS systemd-run bash"
 cs_check "chmod u+s" "deny" "$CS chmod u+s /usr/bin/find"
 
@@ -125,9 +150,11 @@ echo ""
 cs_check "cat /etc/shadow (via allowed cat)" "allow" "$CS cat /etc/shadow"
 cs_check "cat SSH private key" "allow" "$CS cat /home/openclaw/.ssh/id_ed25519"
 cs_check "cp /etc/shadow to /tmp" "allow" "$CS cp /etc/shadow /tmp/rl8_shadow.txt"
-cs_check "docker mount host root" "allow" "$CS docker run --rm -v /:/host:ro alpine cat /host/etc/hostname"
-cs_check "docker --privileged" "allow" "$CS docker run --rm --privileged alpine id"
-cs_check "docker mount ClawTower logs" "allow" "$CS docker run --rm -v /var/log/clawtower:/l:ro alpine cat /l/alerts.jsonl"
+# Docker tests: harden removes openclaw from docker group, so these fail
+# with permission denied (correct behavior). Use timeout to prevent hangs.
+cs_check "docker mount host root" "allow" "timeout 15 $CS docker run --rm -v /:/host:ro alpine cat /host/etc/hostname"
+cs_check "docker --privileged" "allow" "timeout 15 $CS docker run --rm --privileged alpine id"
+cs_check "docker mount ClawTower logs" "allow" "timeout 15 $CS docker run --rm -v /var/log/clawtower:/l:ro alpine cat /l/alerts.jsonl"
 cs_check "systemctl restart clawtower" "allow" "$CS systemctl restart clawtower"
 cs_check "sed -n p /etc/shadow (read)" "allow" "$CS sed -n p /etc/shadow"
 
