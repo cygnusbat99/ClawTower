@@ -105,6 +105,7 @@ Most sections use `#[serde(default)]` — missing sections gracefully fall back 
 - [`[policy]`](#policy)
 - [`[secureclaw]`](#secureclaw)
 - [`[netpolicy]`](#netpolicy)
+- [`[behavior]`](#behavior)
 - [`[sentinel]`](#sentinel)
 - [`[auto_update]`](#auto_update)
 
@@ -280,16 +281,18 @@ HTTP REST API server for external integrations.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | `bool` | `false` | Enable the API server |
-| `bind` | `String` | `"0.0.0.0"` | Bind address |
+| `bind` | `String` | `"127.0.0.1"` | Bind address |
 | `port` | `u16` | `18791` | Listen port |
+| `auth_token` | `String` | `""` | Optional bearer token for API auth (`/api/health` always unauthenticated) |
 
 **Endpoints:** `/api/status`, `/api/alerts`, `/api/health`, `/api/security`
 
 ```toml
 [api]
 enabled = false
-bind = "0.0.0.0"
+bind = "127.0.0.1"
 port = 18791
+auth_token = ""
 ```
 
 ---
@@ -443,6 +446,32 @@ mode = "blocklist"
 allowed_hosts = ["api.anthropic.com", "*.openai.com", "github.com"]
 allowed_ports = [80, 443, 53]
 blocked_hosts = ["evil.com", "*.malware.net"]
+```
+
+---
+
+## `[behavior]`
+
+**Struct:** `BehaviorConfig`
+
+Hardcoded behavior detector tuning and migration controls.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `safe_hosts` | `Vec<String>` | `[]` | Extra allowlisted hosts for behavior exfil checks |
+| `detector_shadow_mode` | `bool` | `false` | Run abstraction detector in shadow mode and emit parity diagnostics on mismatch |
+
+When `detector_shadow_mode = true`, ClawTower keeps production behavior alerts unchanged,
+but also runs the new detector abstraction path in parallel and compares outputs.
+Mismatches emit `parity:behavior` Info alerts (deduped) and parity counters are exposed in:
+
+- `GET /api/status` → `parity.*`
+- `GET /api/security` → `parity.*`
+
+```toml
+[behavior]
+safe_hosts = ["internal-api.example.com"]
+detector_shadow_mode = false
 ```
 
 ---
@@ -618,8 +647,10 @@ enabled = true
 # HTTP REST API: /api/status, /api/alerts, /api/health, /api/security
 enabled = false
 # Use 127.0.0.1 for local-only; 0.0.0.0 for network access
-bind = "0.0.0.0"
+bind = "127.0.0.1"
 port = 18791
+# Optional bearer token; empty disables API auth
+auth_token = ""
 
 [scans]
 # Seconds between periodic security scan cycles (30+ checks)
@@ -665,6 +696,12 @@ allowed_ports = [80, 443, 53]
 # Used in blocklist mode
 blocked_hosts = []
 
+[behavior]
+# Extra safe hosts for behavior exfil checks
+safe_hosts = ["internal-api.example.com"]
+# Run detector abstraction in shadow mode and emit parity diagnostics on mismatch
+detector_shadow_mode = false
+
 [sentinel]
 # Real-time file integrity monitoring via inotify
 enabled = true
@@ -707,4 +744,5 @@ interval = 300
 - [SENTINEL.md](SENTINEL.md) — Deep dive into `[sentinel]` file watching behavior
 - [POLICIES.md](POLICIES.md) — Writing YAML rules for the `[policy]` engine
 - [CLAWSUDO-AND-POLICY.md](CLAWSUDO-AND-POLICY.md) — `[proxy]` DLP setup and admin key system
+- [TUNING.md](TUNING.md) — Production tuning including behavior parity shadow mode
 - [INDEX.md](INDEX.md) — Full documentation index

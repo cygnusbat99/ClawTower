@@ -41,6 +41,7 @@ Quick map to every doc in this project. Start with what you need.
 
 | Document | What's in it |
 |----------|-------------|
+| [Runtime Abstraction Phase 1 Design](plans/2026-02-18-runtime-abstraction-phase1-design.md) | Parity-first refactor plan for detector/source abstractions and hardcoding removal |
 | [Tinman Coverage Design](plans/2026-02-17-tinman-coverage-design.md) | Gap analysis and design for Tinman eval harness attack coverage |
 | [Tinman Coverage Implementation](plans/2026-02-17-tinman-coverage-implementation.md) | Implementation plan for 7 Tinman attack categories |
 

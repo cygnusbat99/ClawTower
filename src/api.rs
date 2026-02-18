@@ -89,6 +89,7 @@ struct StatusResponse {
     uptime_seconds: u64,
     version: &'static str,
     modules: Modules,
+    parity: ParityStatus,
 }
 
 #[derive(Serialize)]
@@ -113,6 +114,14 @@ struct SecurityResponse {
     total_alerts: usize,
     alerts_by_severity: SeverityCounts,
     alerts_by_source: std::collections::HashMap<String, usize>,
+    parity: ParityStatus,
+}
+
+#[derive(Serialize)]
+struct ParityStatus {
+    mismatches_total: u64,
+    alerts_emitted: u64,
+    alerts_suppressed: u64,
 }
 
 #[derive(Serialize)]
@@ -178,15 +187,21 @@ async fn handle(
                 .unwrap()
         }
         "/api/status" => {
+            let parity = crate::auditd::parity_stats_snapshot();
             let resp = StatusResponse {
                 status: "running",
                 uptime_seconds: start_time.elapsed().as_secs(),
-                version: "0.4.3-beta",
+                version: env!("CARGO_PKG_VERSION"),
                 modules: Modules {
                     auditd: true,
                     network: true,
                     behavior: true,
                     firewall: true,
+                },
+                parity: ParityStatus {
+                    mismatches_total: parity.mismatches_total,
+                    alerts_emitted: parity.alerts_emitted,
+                    alerts_suppressed: parity.alerts_suppressed,
                 },
             };
             json_response(StatusCode::OK, serde_json::to_string(&resp).unwrap())
@@ -221,6 +236,7 @@ async fn handle(
         "/api/security" => {
             let store = store.lock().await;
             let (info, warn, crit) = store.count_by_severity();
+            let parity = crate::auditd::parity_stats_snapshot();
             let resp = SecurityResponse {
                 uptime_seconds: start_time.elapsed().as_secs(),
                 total_alerts: store.len(),
@@ -230,6 +246,11 @@ async fn handle(
                     critical: crit,
                 },
                 alerts_by_source: store.count_by_source(),
+                parity: ParityStatus {
+                    mismatches_total: parity.mismatches_total,
+                    alerts_emitted: parity.alerts_emitted,
+                    alerts_suppressed: parity.alerts_suppressed,
+                },
             };
             json_response(StatusCode::OK, serde_json::to_string(&resp).unwrap())
         }
@@ -462,5 +483,27 @@ mod tests {
         let pending: SharedPendingActions = Arc::new(Mutex::new(Vec::new()));
         let resp = handle(req, store, Instant::now(), token, pending, None).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_status_includes_parity_counters() {
+        let store = new_shared_store(100);
+        let token = Arc::new(String::new());
+        let req = Request::builder()
+            .uri("/api/status")
+            .body(Body::empty())
+            .unwrap();
+        let pending: SharedPendingActions = Arc::new(Mutex::new(Vec::new()));
+
+        let resp = handle(req, store, Instant::now(), token, pending, None).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("parity").is_some(), "status response must include parity section");
+        let parity = &json["parity"];
+        assert!(parity.get("mismatches_total").is_some());
+        assert!(parity.get("alerts_emitted").is_some());
+        assert!(parity.get("alerts_suppressed").is_some());
     }
 }

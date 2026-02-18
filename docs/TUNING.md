@@ -273,6 +273,38 @@ Eliminates **~61 alerts/18h**.
 
 ## Additional Recommendations
 
+### Behavior Detector Shadow Mode (Refactor Migration)
+
+ClawTower now supports an opt-in shadow mode for behavior detector migration.
+This is for validating parity between the legacy hardcoded behavior path and
+the new detector abstraction path before cutover.
+
+Enable via config overlay:
+
+```toml
+# /etc/clawtower/config.d/50-behavior-shadow.toml
+[behavior]
+detector_shadow_mode = true
+```
+
+What it does:
+
+- Keeps production behavior alerts unchanged
+- Runs new detector path in parallel
+- Emits `parity:behavior` diagnostics only on mismatch
+- Deduplicates repeated identical mismatches (30s window)
+
+Monitor counters in:
+
+- `GET /api/status` → `parity.mismatches_total`, `parity.alerts_emitted`, `parity.alerts_suppressed`
+- `GET /api/security` → same parity counters
+
+How to interpret:
+
+- High `mismatches_total`, low `alerts_suppressed` → diverse parity drift (investigate logic differences)
+- High `alerts_suppressed` relative to emitted → repeated known mismatch signature (likely one hot path)
+- Near-zero mismatches over representative workload → candidate for safe cutover planning
+
 ### Investigate Service Stability
 The noise analysis found **52 ClawTower restarts in 18h** (~1 every 21 minutes). This generates 260 Info alerts and indicates a crash loop. Check `journalctl -u clawtower` for crash reasons.
 

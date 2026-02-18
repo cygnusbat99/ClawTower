@@ -135,6 +135,13 @@ Every component below receives a `raw_tx: mpsc::Sender<Alert>` clone and sends a
 - Called inline from the auditd tail loop, not a separate task
 - Produces `Warning` or `Critical` alerts depending on pattern match confidence
 
+### behavior detector adapter (shadow mode)
+
+- When `[behavior].detector_shadow_mode = true`, auditd also evaluates the detector abstraction path in parallel
+- Production behavior alerts continue to come from the legacy path during shadow mode
+- Parity drift emits `parity:behavior` `Info` diagnostics (deduped in-source)
+- Counters are exposed via API: `parity.mismatches_total`, `parity.alerts_emitted`, `parity.alerts_suppressed`
+
 ### sentinel (`src/sentinel.rs`)
 
 - **Source tag**: `"sentinel"`
@@ -254,6 +261,8 @@ The aggregator (`src/aggregator.rs`) sits between raw sources and consumers, pre
    - Pushed to the **API alert store** (shared in-memory store for the HTTP API)
 
 5. **Log Rotation** — Every 100 alerts, old dedup/rate-limit entries are cleaned up. JSONL log is rotated when it exceeds 10 MB.
+
+> Note: `parity:behavior` mismatch diagnostics are deduplicated before entering the aggregator, reducing migration noise while preserving visibility.
 
 ### Configuration
 

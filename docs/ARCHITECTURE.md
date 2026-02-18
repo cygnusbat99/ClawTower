@@ -122,6 +122,23 @@ The behavior engine (`src/behavior.rs`) applies hardcoded rules in priority orde
 
 Also checks syscall-level events: `openat` on sensitive paths, `unlinkat` on critical files, container escape via `/var/run/docker.sock`, suspicious temp file creation. Build-tool child processes (cargo, gcc, etc.) are allowlisted to reduce false positives.
 
+### Shadow Parity Mode (Migration Bridge)
+
+To support de-hardcoding migration, auditd can run the new detector abstraction path in parallel:
+
+- Config: `[behavior].detector_shadow_mode = true`
+- Legacy behavior classification remains the production decision path
+- Adapter output is compared against legacy output for parity
+- Mismatches emit deduped `parity:behavior` Info alerts for diagnostics
+
+Parity counters are exposed by the API (`/api/status`, `/api/security`) as:
+
+- `parity.mismatches_total`
+- `parity.alerts_emitted`
+- `parity.alerts_suppressed`
+
+This enables a parity-first rollout without changing alerting semantics.
+
 ## Aggregator — Dedup and Rate Limiting
 
 The aggregator (`src/aggregator.rs`) sits between all sources and all consumers.

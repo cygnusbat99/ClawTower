@@ -58,6 +58,11 @@ pub struct Config {
 pub struct BehaviorConfig {
     #[serde(default)]
     pub safe_hosts: Vec<String>,
+    /// When enabled, run the new detector abstraction in shadow mode and
+    /// emit diagnostics if it disagrees with hardcoded behavior classification.
+    /// This does not change production alert fanout.
+    #[serde(default)]
+    pub detector_shadow_mode: bool,
 }
 
 /// Auto-update configuration: checks GitHub releases periodically.

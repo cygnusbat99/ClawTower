@@ -1,6 +1,13 @@
 # API Reference
 
-ClawTower serves a JSON API on port **18791** (configurable via `config.toml`). LAN-only access, no authentication — restrict via firewall rules.
+ClawTower serves a JSON API on port **18791** (configurable via `config.toml`).
+By default it binds to `127.0.0.1`.
+
+Authentication is optional:
+
+- If `[api].auth_token` is empty, endpoints are unauthenticated.
+- If `[api].auth_token` is set, requests must include `Authorization: Bearer <token>`.
+- `GET /api/health` remains unauthenticated for health checks.
 
 ## Endpoints
 
@@ -20,11 +27,22 @@ System status and module states.
 curl http://localhost:18791/api/status
 ```
 
+With bearer auth enabled:
+
+```bash
+curl -H "Authorization: Bearer $CLAWTOWER_API_TOKEN" http://localhost:18791/api/status
+```
+
 ```json
 {
   "status": "running",
   "uptime_seconds": 3600,
-  "version": "0.2.0",
+  "version": "0.4.3-beta",
+  "parity": {
+    "mismatches_total": 0,
+    "alerts_emitted": 0,
+    "alerts_suppressed": 0
+  },
   "modules": {
     "auditd": true,
     "network": true,
@@ -77,6 +95,11 @@ curl http://localhost:18791/api/security
 {
   "uptime_seconds": 3600,
   "total_alerts": 42,
+  "parity": {
+    "mismatches_total": 0,
+    "alerts_emitted": 0,
+    "alerts_suppressed": 0
+  },
   "alerts_by_severity": {
     "info": 30,
     "warning": 10,
@@ -105,7 +128,7 @@ curl http://localhost:18791/api/health
 {
   "healthy": true,
   "uptime_seconds": 3600,
-  "version": "0.2.0",
+  "version": "0.4.3-beta",
   "last_alert_age_seconds": 45
 }
 ```
@@ -127,9 +150,11 @@ Returns 404:
 
 - All responses include `Access-Control-Allow-Origin: *` for cross-origin access
 - The alert ring buffer holds up to 1000 alerts in memory; `/api/alerts` returns the last 100
+- `parity.*` counters are primarily useful when `[behavior].detector_shadow_mode = true`
+- If auth is enabled and the bearer token is missing/invalid, endpoints (except `/api/health`) return `401` with `{"error":"unauthorized"}`
 - Severity values in responses: `INFO`, `WARN`, `CRIT`
 - Timestamps are RFC 3339 format with timezone offset
-- The API server binds to `0.0.0.0:18791` by default — use firewall rules to restrict to LAN (e.g., `192.168.1.0/24`)
+- Default bind is `127.0.0.1:18791`; set `[api].bind = "0.0.0.0"` to expose on LAN and restrict access with firewall rules
 
 ## See Also
 
