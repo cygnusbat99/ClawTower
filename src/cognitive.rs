@@ -13,8 +13,10 @@
 use anyhow::Result;
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use crate::safe_io::{atomic_write, mkdir_safe, open_nofollow, read_nofollow};
 use crate::scanner::{ScanResult, ScanStatus};
 
 /// Protected cognitive files — changes are CRIT (tampering)
@@ -61,7 +63,7 @@ impl CognitiveBaseline {
 
     /// Load baselines from a saved file
     pub fn load(baseline_path: &Path, workspace_dir: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(baseline_path)?;
+        let content = read_nofollow(baseline_path, None)?;
         let mut baselines = HashMap::new();
         for line in content.lines() {
             let parts: Vec<&str> = line.splitn(2, " ").collect();
@@ -84,9 +86,9 @@ impl CognitiveBaseline {
             content.push_str(&format!("{} {}\n", hash, path.display()));
         }
         if let Some(parent) = baseline_path.parent() {
-            std::fs::create_dir_all(parent)?;
+            mkdir_safe(parent, 0o700)?;
         }
-        std::fs::write(baseline_path, content)?;
+        atomic_write(baseline_path, content.as_bytes(), 0o600)?;
         Ok(())
     }
 
@@ -211,7 +213,9 @@ impl std::fmt::Display for CognitiveAlert {
 }
 
 fn compute_sha256(path: &Path) -> Result<String> {
-    let data = std::fs::read(path)?;
+    let mut file = open_nofollow(path)?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)?;
     let hash = Sha256::digest(&data);
     Ok(hex::encode(hash))
 }
@@ -224,7 +228,7 @@ fn generate_diff(current_path: &Path, _workspace_dir: &Path) -> Option<String> {
     let filename = current_path.file_name()?.to_string_lossy();
     let shadow_path = PathBuf::from(SHADOW_DIR).join(filename.as_ref());
 
-    let current = std::fs::read_to_string(current_path).ok()?;
+    let current = read_nofollow(current_path, None).ok()?;
 
     if !shadow_path.exists() {
         // No previous version — show summary
@@ -232,7 +236,7 @@ fn generate_diff(current_path: &Path, _workspace_dir: &Path) -> Option<String> {
         return Some(format!("(new file, {} lines)", lines.len()));
     }
 
-    let previous = std::fs::read_to_string(&shadow_path).ok()?;
+    let previous = read_nofollow(&shadow_path, None).ok()?;
     if previous == current {
         return None;
     }
@@ -286,9 +290,11 @@ fn generate_diff(current_path: &Path, _workspace_dir: &Path) -> Option<String> {
 fn save_shadow(path: &Path) {
     if let Some(filename) = path.file_name() {
         let shadow_dir = Path::new(SHADOW_DIR);
-        let _ = std::fs::create_dir_all(shadow_dir);
+        let _ = mkdir_safe(shadow_dir, 0o700);
         let shadow_path = shadow_dir.join(filename);
-        let _ = std::fs::copy(path, shadow_path);
+        if let Ok(content) = read_nofollow(path, None) {
+            let _ = atomic_write(&shadow_path, content.as_bytes(), 0o600);
+        }
     }
 }
 

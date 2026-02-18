@@ -259,8 +259,20 @@ pub fn parse_to_event(line: &str, watched_users: Option<&[String]>) -> Option<Pa
     // For non-EXECVE lines, filter by watched users (unless tamper event)
     if !is_tamper {
     if let Some(users) = watched_users {
-        let matches = users.iter().any(|uid| {
-            line.contains(&format!("uid={}", uid)) || line.contains(&format!("auid={}", uid))
+        // Use boundary-aware field parsing to prevent substring matches:
+        // watching UID "10" must NOT match uid=100 or uid=1000.
+        // Parse both the line's uid/auid and watched UIDs as integers
+        // for proper numeric comparison.
+        let line_uid = crate::safe_match::parse_audit_field(line, "uid")
+            .and_then(|v| v.parse::<u64>().ok());
+        let line_auid = crate::safe_match::parse_audit_field(line, "auid")
+            .and_then(|v| v.parse::<u64>().ok());
+        let matches = users.iter().any(|uid_str| {
+            if let Ok(watched_uid) = uid_str.parse::<u64>() {
+                line_uid == Some(watched_uid) || line_auid == Some(watched_uid)
+            } else {
+                false
+            }
         });
         if !matches {
             return None;
@@ -1092,14 +1104,11 @@ mod tests {
     }
 
     #[test]
-    fn test_user_filter_uid_substring_false_positive() {
-        // FINDING: uid=100 contains "uid=10" — potential false match!
+    fn test_user_filter_uid_substring_no_false_positive() {
+        // Watching UID "10" must NOT match uid=100 — boundary-aware field parsing prevents this
         let line = r#"type=SYSCALL msg=audit(1707849600.123:456): arch=c00000b7 syscall=56 success=yes uid=100 exe="/usr/bin/ls""#;
         let event = parse_to_event(line, Some(&["10".to_string()]));
-        // BUG: substring matching causes false positives — "uid=10" matches inside "uid=100"
-        if event.is_some() {
-            // BUG CONFIRMED: watching uid=10 also matches uid=100, uid=1000, etc.
-        }
+        assert!(event.is_none(), "uid=100 must NOT match watched UID 10 — no substring matching");
     }
 
     #[test]

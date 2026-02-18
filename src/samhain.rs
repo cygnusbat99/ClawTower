@@ -6,13 +6,13 @@
 //! is not yet running.
 
 use anyhow::Result;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
-use std::fs::File;
 use std::path::Path;
 use tokio::sync::mpsc;
-use tokio::time::{sleep, Duration};
+use tokio::time::Duration;
 
 use crate::alerts::{Alert, Severity};
+use crate::safe_match::parse_log_severity;
+use crate::safe_tail::SafeTailer;
 
 /// Parse a Samhain log line into an Alert.
 /// Samhain log lines look like:
@@ -25,15 +25,10 @@ pub fn parse_samhain_line(line: &str) -> Option<Alert> {
         return None;
     }
 
-    // Determine severity from Samhain's level prefix
-    let severity = if line.contains("CRIT") || line.contains("ALERT") {
-        Severity::Critical
-    } else if line.contains("WARN") {
-        Severity::Warning
-    } else if line.contains("NOTICE") || line.contains("INFO") || line.contains("MARK") {
-        Severity::Info
-    } else {
-        return None; // Skip debug/unknown lines
+    // Determine severity from Samhain's level prefix (only checks before first `:` or `]`)
+    let severity = match parse_log_severity(line) {
+        Some(sev) => sev,
+        None => return None, // Skip debug/unknown lines
     };
 
     // Extract the meaningful part — everything after the timestamp bracket
@@ -60,46 +55,17 @@ pub async fn tail_samhain_log(
     path: &Path,
     tx: mpsc::Sender<Alert>,
 ) -> Result<()> {
-    // Wait for log file to appear
-    while !path.exists() {
-        let _ = tx.send(Alert::new(
-            Severity::Info,
-            "samhain",
-            &format!("Waiting for Samhain log at {}...", path.display()),
-        )).await;
-        sleep(Duration::from_secs(60)).await;
-    }
+    let tailer = SafeTailer::new(path)
+        .retry_interval(Duration::from_secs(60));
+    let mut rx = tailer.tail_lines(tx.clone(), "samhain").await;
 
-    let mut file = File::open(path)?;
-    file.seek(SeekFrom::End(0))?;
-    let mut reader = BufReader::new(file);
-    let mut line = String::new();
-
-    let _ = tx.send(Alert::new(
-        Severity::Info,
-        "samhain",
-        "Samhain log monitor started",
-    )).await;
-
-    loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => sleep(Duration::from_secs(2)).await,
-            Ok(_) => {
-                if let Some(alert) = parse_samhain_line(&line) {
-                    let _ = tx.send(alert).await;
-                }
-            }
-            Err(e) => {
-                let _ = tx.send(Alert::new(
-                    Severity::Warning,
-                    "samhain",
-                    &format!("Error reading Samhain log: {}", e),
-                )).await;
-                sleep(Duration::from_secs(10)).await;
-            }
+    while let Some(line) = rx.recv().await {
+        if let Some(alert) = parse_samhain_line(&line) {
+            let _ = tx.send(alert).await;
         }
     }
+
+    Ok(())
 }
 
 #[cfg(test)]

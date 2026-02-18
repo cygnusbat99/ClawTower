@@ -18,6 +18,11 @@ const HW_BREAKPOINT_W: u32 = 2;
 const HW_BREAKPOINT_RW: u32 = 3;
 const PERF_FLAG_FD_CLOEXEC: u64 = 1;
 
+/// Maximum length for cross-memory read/write operations (4 MB).
+/// Prevents OOM from unbounded allocations and limits the blast radius
+/// of payload corruption.
+const MAX_MEMORY_OP_LEN: usize = 4 * 1024 * 1024;
+
 // ── Threat Levels ───────────────────────────────────────────────────────────
 
 /// Threat level determines adaptive scan intervals and response intensity.
@@ -258,6 +263,16 @@ pub fn read_process_memory(
     len: usize,
     caps: &PlatformCapabilities,
 ) -> Result<Vec<u8>, io::Error> {
+    if len > MAX_MEMORY_OP_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "read length {} exceeds maximum {} bytes",
+                len, MAX_MEMORY_OP_LEN
+            ),
+        ));
+    }
+
     if caps.proc_mem {
         read_proc_mem(pid, addr, len)
     } else if caps.cross_memory_attach {
@@ -282,6 +297,16 @@ fn read_proc_mem(pid: i32, addr: u64, len: usize) -> Result<Vec<u8>, io::Error> 
 
 /// Read via `process_vm_readv`.
 fn read_cross_memory(pid: i32, addr: u64, len: usize) -> Result<Vec<u8>, io::Error> {
+    if len > MAX_MEMORY_OP_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "read length {} exceeds maximum {} bytes",
+                len, MAX_MEMORY_OP_LEN
+            ),
+        ));
+    }
+
     let mut buf = vec![0u8; len];
     let local_iov = libc::iovec {
         iov_base: buf.as_mut_ptr() as *mut libc::c_void,
@@ -466,6 +491,12 @@ impl MemoryIntegrity {
 /// Writes random garbage with an illegal instruction prefix (ARM UDF or x86 UD2)
 /// at the start. Only works if `cross_memory_attach` capability is available.
 ///
+/// # Validation
+/// - Rejects null addresses (`addr == 0`)
+/// - Rejects lengths exceeding `MAX_MEMORY_OP_LEN` (4 MB)
+/// - Verifies the target range `[addr, addr+len)` falls entirely within a single
+///   executable memory region of the target process (parsed from `/proc/{pid}/maps`)
+///
 /// # Safety
 /// This writes to another process's memory. Only call when you've confirmed
 /// the target region contains malicious code that must be neutralized.
@@ -484,6 +515,51 @@ pub fn corrupt_payload(
 
     if len == 0 {
         return Ok(());
+    }
+
+    // Reject null address — writing to address 0 is never valid
+    if addr == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "corrupt_payload: addr must not be null",
+        ));
+    }
+
+    // Cap length to prevent unbounded writes
+    if len > MAX_MEMORY_OP_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "corrupt_payload: length {} exceeds maximum {} bytes",
+                len, MAX_MEMORY_OP_LEN
+            ),
+        ));
+    }
+
+    // Verify the target range falls within a single executable memory region
+    // of the target process. We only corrupt code regions — writing to data
+    // segments, heap, or stack is not the intended use of this function.
+    let end_addr = addr.checked_add(len as u64).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "corrupt_payload: addr + len overflows u64",
+        )
+    })?;
+
+    let map = MemoryMap::parse_pid(pid)?;
+    let in_exec_region = map.regions.iter().any(|r| {
+        r.is_executable() && r.start <= addr && end_addr <= r.end
+    });
+
+    if !in_exec_region {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "corrupt_payload: target range {:#x}..{:#x} is not within a single \
+                 executable region of pid {}",
+                addr, end_addr, pid
+            ),
+        ));
     }
 
     // Generate random garbage
@@ -703,7 +779,7 @@ mod tests {
             return;
         }
 
-        // Fork a child, write to its writable memory
+        // Fork a child, write to its executable memory region
         unsafe {
             // Create a shared writable region via pipe for synchronization
             let mut pipefd = [0i32; 2];
@@ -713,12 +789,12 @@ mod tests {
             assert!(pid >= 0, "fork failed");
 
             if pid == 0 {
-                // Child: allocate a writable buffer, signal parent, then wait
+                // Child: allocate an executable buffer, signal parent, then wait
                 libc::close(pipefd[0]);
                 let buf = libc::mmap(
                     std::ptr::null_mut(),
                     4096,
-                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
                     libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
                     -1,
                     0,
@@ -793,5 +869,122 @@ mod tests {
         let result = corrupt_payload(1, 0x1000, 64, &caps);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn test_corrupt_payload_rejects_null_addr() {
+        let mut caps = PlatformCapabilities::probe();
+        caps.cross_memory_attach = true;
+
+        let result = corrupt_payload(1, 0, 64, &caps);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_corrupt_payload_rejects_oversized_len() {
+        let mut caps = PlatformCapabilities::probe();
+        caps.cross_memory_attach = true;
+
+        let result = corrupt_payload(1, 0x1000, MAX_MEMORY_OP_LEN + 1, &caps);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("exceeds maximum"),
+            "error should mention exceeds maximum, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_corrupt_payload_rejects_non_executable_region() {
+        let caps = PlatformCapabilities::probe();
+        if !caps.cross_memory_attach {
+            eprintln!("Skipping: cross_memory_attach not available");
+            return;
+        }
+
+        // Target our own heap — it's writable but NOT executable,
+        // so corrupt_payload must reject it.
+        let pid = std::process::id() as i32;
+        let map = MemoryMap::parse_pid(pid).expect("should parse own maps");
+        let heap = map.regions.iter().find(|r| r.path.as_deref() == Some("[heap]"));
+        if let Some(heap_region) = heap {
+            assert!(!heap_region.is_executable(), "heap should not be executable");
+            let result = corrupt_payload(pid, heap_region.start, 64, &caps);
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        } else {
+            eprintln!("Skipping: no [heap] region found in own maps");
+        }
+    }
+
+    #[test]
+    fn test_corrupt_payload_rejects_stack_region() {
+        let caps = PlatformCapabilities::probe();
+        if !caps.cross_memory_attach {
+            eprintln!("Skipping: cross_memory_attach not available");
+            return;
+        }
+
+        // Target our own stack — it's writable but NOT executable,
+        // so corrupt_payload must reject it.
+        let pid = std::process::id() as i32;
+        let map = MemoryMap::parse_pid(pid).expect("should parse own maps");
+        let stack = map.regions.iter().find(|r| r.path.as_deref() == Some("[stack]"));
+        if let Some(stack_region) = stack {
+            assert!(!stack_region.is_executable(), "stack should not be executable");
+            let result = corrupt_payload(pid, stack_region.start, 64, &caps);
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        } else {
+            eprintln!("Skipping: no [stack] region found in own maps");
+        }
+    }
+
+    #[test]
+    fn test_corrupt_payload_addr_len_overflow() {
+        let mut caps = PlatformCapabilities::probe();
+        caps.cross_memory_attach = true;
+
+        // addr + len would overflow u64
+        let result = corrupt_payload(1, u64::MAX, 64, &caps);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_read_process_memory_rejects_oversized_len() {
+        let caps = PlatformCapabilities::probe();
+        if !caps.proc_mem && !caps.cross_memory_attach {
+            eprintln!("Skipping: no memory access method available");
+            return;
+        }
+
+        let pid = std::process::id() as i32;
+        let result = read_process_memory(pid, 0x1000, MAX_MEMORY_OP_LEN + 1, &caps);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("exceeds maximum"),
+            "error should mention exceeds maximum, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_read_cross_memory_rejects_oversized_len() {
+        // Directly test the internal function
+        let result = read_cross_memory(1, 0x1000, MAX_MEMORY_OP_LEN + 1);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("exceeds maximum"),
+            "error should mention exceeds maximum, got: {}",
+            err
+        );
     }
 }

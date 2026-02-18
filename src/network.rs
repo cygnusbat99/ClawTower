@@ -7,19 +7,18 @@
 //! Default allowlist includes RFC1918 ranges, multicast, and common ports (443, 53, 123).
 
 use anyhow::Result;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::net::IpAddr;
-use std::fs::File;
 use std::path::Path;
 use tokio::sync::mpsc;
-use tokio::time::{sleep, Duration};
 use ipnet::IpNet;
 
 use crate::alerts::{Alert, Severity};
+use crate::safe_match::prefix_matches;
+use crate::safe_tail::SafeTailer;
 
 /// Parse an iptables log line
 pub fn parse_iptables_line(line: &str, prefix: &str) -> Option<Alert> {
-    if !line.contains(prefix) {
+    if !prefix_matches(line, prefix) {
         return None;
     }
 
@@ -89,30 +88,16 @@ pub async fn tail_network_log(
     prefix: &str,
     tx: mpsc::Sender<Alert>,
 ) -> Result<()> {
-    let mut file = File::open(path)?;
-    file.seek(SeekFrom::End(0))?;
-    let mut reader = BufReader::new(file);
-    let mut line = String::new();
+    let tailer = SafeTailer::new(path);
+    let mut rx = tailer.tail_lines(tx.clone(), "network").await;
 
-    loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => sleep(Duration::from_millis(500)).await,
-            Ok(_) => {
-                if let Some(alert) = parse_iptables_line(&line, prefix) {
-                    let _ = tx.send(alert).await;
-                }
-            }
-            Err(e) => {
-                let _ = tx.send(Alert::new(
-                    Severity::Warning,
-                    "network",
-                    &format!("Error reading network log: {}", e),
-                )).await;
-                sleep(Duration::from_secs(5)).await;
-            }
+    while let Some(line) = rx.recv().await {
+        if let Some(alert) = parse_iptables_line(&line, prefix) {
+            let _ = tx.send(alert).await;
         }
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -174,12 +159,10 @@ mod allowlist_tests {
     #[test]
     fn test_redlobster_openclawtower_net_prefix_rejected() {
         let line = "Feb 17 01:00:00 host kernel: [12345.678] OPENCLAWTOWER_NET IN= OUT=eth0 SRC=192.168.1.10 DST=8.8.8.8 DPT=8080 PROTO=TCP";
-        // When looking for CLAWTOWER_NET, a line with OPENCLAWTOWER_NET also matches
-        // because it contains the substring. This test documents the behavior.
+        // OPENCLAWTOWER_NET must NOT match when looking for CLAWTOWER_NET.
+        // prefix_matches enforces word boundaries so substring attacks are rejected.
         let alert = parse_iptables_line(line, "CLAWTOWER_NET");
-        // The line DOES contain "CLAWTOWER_NET" as a substring of "OPENCLAWTOWER_NET"
-        // so it will parse. The correct prefix should be used in config to avoid this.
-        assert!(alert.is_some(), "Substring match means OPENCLAWTOWER_NET contains CLAWTOWER_NET");
+        assert!(alert.is_none(), "OPENCLAWTOWER_NET must not match CLAWTOWER_NET prefix");
     }
 
     #[test]

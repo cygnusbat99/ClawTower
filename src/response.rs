@@ -475,21 +475,30 @@ fn parse_containment_actions(action_tags: &[String], alert: &Alert) -> Vec<Conta
 }
 
 /// Extract a PID from an alert message (looks for pid=NNNN or PID NNNN patterns).
+/// Returns None if no PID found or if PID is 0 (which would signal the entire process group).
 fn extract_pid(message: &str) -> Option<u32> {
     // Try pid=NNNN
     if let Some(idx) = message.find("pid=") {
         let rest = &message[idx + 4..];
         let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if let Ok(pid) = num.parse() {
-            return Some(pid);
+        if let Ok(pid) = num.parse::<u32>() {
+            if pid > 0 {
+                return Some(pid);
+            }
+            eprintln!("Warning: refusing to act on PID 0 (would target entire process group)");
+            return None;
         }
     }
     // Try PID NNNN
     if let Some(idx) = message.to_uppercase().find("PID ") {
         let rest = &message[idx + 4..];
         let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if let Ok(pid) = num.parse() {
-            return Some(pid);
+        if let Ok(pid) = num.parse::<u32>() {
+            if pid > 0 {
+                return Some(pid);
+            }
+            eprintln!("Warning: refusing to act on PID 0 (would target entire process group)");
+            return None;
         }
     }
     None
@@ -507,13 +516,30 @@ fn extract_uid(message: &str) -> Option<u32> {
     None
 }
 
+/// Validate that a path contains only safe characters: alphanumeric, `/`, `_`, `.`, `-`.
+/// Rejects paths that could be used for command injection or argument injection.
+fn is_safe_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.starts_with('/')
+        && path.len() > 1
+        && path.chars().all(|c| c.is_alphanumeric() || "/_.-".contains(c))
+        // Reject path traversal patterns
+        && !path.contains("..")
+}
+
 /// Extract file paths from an alert message (looks for /absolute/paths).
+/// Only returns paths that pass validation (alphanumeric + `/_.-`).
 fn extract_paths(message: &str) -> Vec<String> {
     let mut paths = Vec::new();
     for word in message.split_whitespace() {
         let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '.' && c != '-' && c != '_');
-        if clean.starts_with('/') && clean.len() > 1 {
+        if is_safe_path(clean) {
             paths.push(clean.to_string());
+        } else if clean.starts_with('/') && clean.len() > 1 {
+            eprintln!(
+                "Warning: skipping path with unsafe characters extracted from alert: {:?}",
+                clean
+            );
         }
     }
     paths
@@ -552,8 +578,16 @@ async fn execute_containment(action: &ContainmentAction) {
         ContainmentAction::FreezeFilesystem { paths } => {
             let mut errors = Vec::new();
             for path in paths {
+                // Defense-in-depth: re-validate path at execution time
+                if !is_safe_path(path) {
+                    errors.push(format!("{}: rejected — path contains unsafe characters", path));
+                    eprintln!("Warning: refusing to execute chattr on unsafe path: {:?}", path);
+                    continue;
+                }
                 let output = std::process::Command::new("chattr")
-                    .args(["+i", path])
+                    .arg("+i")
+                    .arg("--")
+                    .arg(path)
                     .output();
                 if let Err(e) = output {
                     errors.push(format!("{}: {}", path, e));
@@ -592,6 +626,13 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_pid_rejects_zero() {
+        // PID 0 would signal the entire process group — must be rejected
+        assert_eq!(extract_pid("pid=0 something"), None);
+        assert_eq!(extract_pid("PID 0 something"), None);
+    }
+
+    #[test]
     fn test_extract_uid() {
         assert_eq!(extract_uid("user uid=1000 accessed file"), Some(1000));
         assert_eq!(extract_uid("no uid"), None);
@@ -601,6 +642,60 @@ mod tests {
     fn test_extract_paths() {
         let paths = extract_paths("modified /etc/passwd and /home/user/.ssh/authorized_keys");
         assert_eq!(paths, vec!["/etc/passwd", "/home/user/.ssh/authorized_keys"]);
+    }
+
+    #[test]
+    fn test_extract_paths_rejects_injection() {
+        // Shell metacharacters must be rejected
+        let paths = extract_paths("modified /etc/passwd;rm -rf / and /tmp/safe_file");
+        // The injected path should be filtered out; /tmp/safe_file should pass
+        assert_eq!(paths, vec!["/tmp/safe_file"]);
+    }
+
+    #[test]
+    fn test_extract_paths_rejects_backticks() {
+        let paths = extract_paths("file at /tmp/`whoami`/test");
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_extract_paths_rejects_dollar_subshell() {
+        let paths = extract_paths("file at /tmp/$(id)/test");
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_extract_paths_rejects_traversal() {
+        let paths = extract_paths("file at /etc/../../../etc/shadow");
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_extract_paths_rejects_spaces_and_special() {
+        // Paths with spaces, pipes, redirects, etc.
+        let paths = extract_paths("modified /tmp/good_file and /tmp/bad|file");
+        assert_eq!(paths, vec!["/tmp/good_file"]);
+    }
+
+    #[test]
+    fn test_is_safe_path() {
+        assert!(is_safe_path("/etc/passwd"));
+        assert!(is_safe_path("/home/user/.ssh/authorized_keys"));
+        assert!(is_safe_path("/var/log/auth.log"));
+        assert!(is_safe_path("/tmp/test-file_v2.txt"));
+
+        // Rejections
+        assert!(!is_safe_path(""));
+        assert!(!is_safe_path("/"));
+        assert!(!is_safe_path("relative/path"));
+        assert!(!is_safe_path("/etc/passwd;rm -rf /"));
+        assert!(!is_safe_path("/tmp/$(whoami)"));
+        assert!(!is_safe_path("/tmp/`id`"));
+        assert!(!is_safe_path("/tmp/file with spaces"));
+        assert!(!is_safe_path("/etc/../shadow"));
+        assert!(!is_safe_path("/tmp/file|pipe"));
+        assert!(!is_safe_path("/tmp/file>redirect"));
+        assert!(!is_safe_path("/tmp/file&background"));
     }
 
     #[test]

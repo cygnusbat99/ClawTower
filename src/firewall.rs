@@ -6,27 +6,51 @@
 
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
-use std::process::Command;
+use std::time::Duration as StdDuration;
 
 use crate::alerts::{Alert, Severity};
+use crate::safe_cmd::SafeCommand;
 
-/// Capture current UFW status
-fn get_ufw_status() -> Result<String, String> {
-    let output = Command::new("ufw")
-        .arg("status")
-        .arg("verbose")
-        .output()
-        .map_err(|e| format!("Failed to run ufw: {}", e))?;
+/// Resolve the absolute path to the `ufw` binary.
+///
+/// Tries `/usr/sbin/ufw` first (Debian/Ubuntu default), then `/usr/bin/ufw`.
+fn find_ufw_path() -> Result<&'static str, String> {
+    for path in &["/usr/sbin/ufw", "/usr/bin/ufw"] {
+        if std::path::Path::new(path).exists() {
+            return Ok(path);
+        }
+    }
+    Err("ufw binary not found at /usr/sbin/ufw or /usr/bin/ufw".to_string())
+}
 
-    if !output.status.success() && unsafe { libc::getuid() } != 0 {
-        // Try with sudo (only if not already root — NoNewPrivileges blocks sudo)
-        let output = Command::new("sudo")
-            .args(["ufw", "status", "verbose"])
-            .output()
-            .map_err(|e| format!("Failed to run sudo ufw: {}", e))?;
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+/// Capture current UFW status using [`SafeCommand`] with absolute path
+/// enforcement, a 15-second timeout, and a sanitized environment.
+///
+/// Falls back to running via `sudo` if the direct invocation fails (e.g.,
+/// when running as a non-root user).
+async fn get_ufw_status() -> Result<String, String> {
+    let ufw_path = find_ufw_path()?;
+
+    // First try: run ufw directly
+    let cmd = SafeCommand::new(ufw_path)
+        .map_err(|e| format!("Failed to create ufw command: {}", e))?
+        .args(&["status", "verbose"])
+        .timeout(StdDuration::from_secs(15));
+
+    match cmd.run_output().await {
+        Ok(output) => return Ok(String::from_utf8_lossy(&output.stdout).to_string()),
+        Err(_direct_err) => {
+            // Direct call failed — try with sudo as fallback
+            let sudo_cmd = SafeCommand::new("/usr/bin/sudo")
+                .map_err(|e| format!("Failed to create sudo command: {}", e))?
+                .args(&[ufw_path, "status", "verbose"])
+                .timeout(StdDuration::from_secs(15));
+
+            match sudo_cmd.run_output().await {
+                Ok(output) => Ok(String::from_utf8_lossy(&output.stdout).to_string()),
+                Err(sudo_err) => Err(format!("Failed to run ufw (direct and sudo): {}", sudo_err)),
+            }
+        }
     }
 }
 
@@ -62,7 +86,7 @@ fn diff_status(baseline: &str, current: &str) -> String {
 /// Monitor firewall state periodically and send alerts on changes
 pub async fn monitor_firewall(tx: mpsc::Sender<Alert>) {
     // Capture baseline
-    let baseline = match get_ufw_status() {
+    let baseline = match get_ufw_status().await {
         Ok(s) => s,
         Err(e) => {
             let _ = tx.send(Alert::new(
@@ -93,7 +117,7 @@ pub async fn monitor_firewall(tx: mpsc::Sender<Alert>) {
     loop {
         sleep(Duration::from_secs(30)).await;
 
-        let current = match get_ufw_status() {
+        let current = match get_ufw_status().await {
             Ok(s) => s,
             Err(_) => continue,
         };

@@ -38,23 +38,14 @@ impl NetPolicy {
     pub fn check_connection(&self, host: &str, port: u16) -> Option<Alert> {
         match self.mode.as_str() {
             "allowlist" => {
-                // Check if host is explicitly allowed
-                let host_allowed = self.allowed_hosts.contains(host);
-                
-                // Check for wildcard/suffix matches (e.g., "*.anthropic.com")
-                let suffix_allowed = if !host_allowed {
-                    self.allowed_hosts.iter().any(|h| {
-                        if let Some(suffix) = h.strip_prefix("*.") {
-                            host.ends_with(suffix)
-                        } else {
-                            false
-                        }
-                    })
-                } else {
-                    false
-                };
-                
-                if host_allowed || suffix_allowed {
+                // Check if host matches any allowed host pattern using
+                // boundary-aware domain matching (prevents "evilopenai.com"
+                // from matching "*.openai.com", and handles case-insensitivity)
+                let host_allowed = self.allowed_hosts.iter().any(|pattern| {
+                    crate::safe_match::domain_matches(host, pattern)
+                });
+
+                if host_allowed {
                     None
                 } else {
                     Some(Alert::new(
@@ -66,29 +57,19 @@ impl NetPolicy {
             }
             _ => {
                 // Blocklist mode: only explicitly blocked hosts are flagged
-                if self.blocked_hosts.contains(host) {
+                // Uses boundary-aware domain matching (case-insensitive,
+                // dot-boundary wildcards)
+                let host_blocked = self.blocked_hosts.iter().any(|pattern| {
+                    crate::safe_match::domain_matches(host, pattern)
+                });
+                if host_blocked {
                     Some(Alert::new(
                         Severity::Critical,
                         "netpolicy",
                         &format!("Blocked outbound connection to {}:{} — host is blocklisted", host, port),
                     ))
                 } else {
-                    let suffix_blocked = self.blocked_hosts.iter().any(|h| {
-                        if let Some(suffix) = h.strip_prefix("*.") {
-                            host.ends_with(suffix)
-                        } else {
-                            false
-                        }
-                    });
-                    if suffix_blocked {
-                        Some(Alert::new(
-                            Severity::Critical,
-                            "netpolicy",
-                            &format!("Blocked outbound connection to {}:{} — host is blocklisted", host, port),
-                        ))
-                    } else {
-                        None
-                    }
+                    None
                 }
             }
         }
@@ -268,11 +249,9 @@ mod tests {
     #[test]
     fn test_allowlist_wildcard_partial_domain_no_match() {
         let policy = make_allowlist_policy();
-        // "notopenai.com" ends_with "openai.com" — potential bypass!
+        // "notopenai.com" must NOT match "*.openai.com" — dot-boundary check prevents this
         let result = policy.check_connection("notopenai.com", 443);
-        // BUG: This PASSES because "notopenai.com".ends_with("openai.com") == true
-        // An attacker could register "evilopenai.com" to bypass the allowlist
-        assert!(result.is_none()); // documenting the bypass
+        assert!(result.is_some(), "notopenai.com must be blocked — not a subdomain of openai.com");
     }
 
     #[test]
@@ -303,21 +282,19 @@ mod tests {
     // --- Blocklist edge cases ---
 
     #[test]
-    fn test_blocklist_wildcard_partial_domain_bypass() {
+    fn test_blocklist_wildcard_partial_domain_no_false_positive() {
         let policy = make_blocklist_policy();
-        // "notmalware.net" ends_with "malware.net" — same bypass as allowlist
+        // "notmalware.net" must NOT match "*.malware.net" — dot-boundary check prevents false positive
         let result = policy.check_connection("notmalware.net", 443);
-        // BUG: blocks "notmalware.net" because ends_with("malware.net") == true
-        assert!(result.is_some()); // false positive documented
+        assert!(result.is_none(), "notmalware.net must not be blocked — not a subdomain of malware.net");
     }
 
     #[test]
-    fn test_blocklist_case_sensitivity() {
+    fn test_blocklist_case_insensitive() {
         let policy = make_blocklist_policy();
-        // "EVIL.COM" vs "evil.com" — case sensitive comparison
+        // "EVIL.COM" vs "evil.com" — domain_matches is case-insensitive
         let result = policy.check_connection("EVIL.COM", 80);
-        // Current impl does exact match, no case normalization
-        assert!(result.is_none()); // BUG: case bypass — EVIL.COM evades blocklist
+        assert!(result.is_some(), "EVIL.COM must be blocked — case-insensitive match against evil.com");
     }
 
     #[test]

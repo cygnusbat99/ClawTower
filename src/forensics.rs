@@ -14,6 +14,8 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::safe_io::{atomic_write, mkdir_safe, redact_env};
+
 /// Default output directory for forensic dumps.
 pub const DEFAULT_FORENSICS_DIR: &str = "/var/lib/clawtower/forensics";
 
@@ -211,7 +213,7 @@ pub fn capture_dump(
         memory_maps: read_memory_maps(pid),
         open_fds: enumerate_fds(pid),
         network_connections: read_network_connections(pid),
-        environment: read_environ(pid),
+        environment: redact_env(&read_environ(pid)),
         cmdline: read_cmdline(pid),
         trigger_pattern: trigger.to_string(),
     })
@@ -222,12 +224,12 @@ pub fn capture_dump(
 /// Creates the output directory if it doesn't exist.
 /// Returns the path to the written file.
 pub fn save_dump(dump: &ForensicDump, output_dir: &Path) -> anyhow::Result<PathBuf> {
-    fs::create_dir_all(output_dir)?;
+    mkdir_safe(output_dir, 0o700)?;
     let ts = dump.timestamp.format("%Y%m%dT%H%M%SZ");
     let filename = format!("incident-{}-{}.json", ts, dump.pid);
     let path = output_dir.join(filename);
     let json = serde_json::to_string_pretty(dump)?;
-    fs::write(&path, &json)?;
+    atomic_write(&path, json.as_bytes(), 0o600)?;
     Ok(path)
 }
 

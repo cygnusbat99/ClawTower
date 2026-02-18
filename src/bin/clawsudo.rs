@@ -3,12 +3,14 @@
 //! Every privileged command goes through policy evaluation before execution.
 //! Usage: `clawsudo <command> [args...]`
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::fs::OpenOptions;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
+
+use sha2::{Sha256, Digest};
 
 
 use chrono::Local;
@@ -286,6 +288,62 @@ fn check_gtfobins(cmd_binary: &str, args: &[String], full_cmd: &str) -> Option<S
     None
 }
 
+// ─── Approval file helpers ───
+
+/// Secure approval directory — root-owned, mode 0700, not world-writable /tmp
+const APPROVAL_DIR: &str = "/var/run/clawtower/approvals";
+
+/// Ensure the approval directory exists with restrictive permissions (mode 0700).
+fn ensure_approval_dir() {
+    let dir = Path::new(APPROVAL_DIR);
+    if !dir.exists() {
+        // Create with mode 0700 — only root can read/write/traverse
+        if std::fs::create_dir_all(dir).is_ok() {
+            // Set permissions explicitly (create_dir_all doesn't honor umask reliably)
+            let _ = std::fs::set_permissions(
+                dir,
+                std::os::unix::fs::PermissionsExt::from_mode(0o700),
+            );
+        }
+    }
+}
+
+/// Compute a SHA-256 based approval filename for a command string.
+/// Uses the first 16 bytes (32 hex chars) of the SHA-256 digest.
+fn approval_path(full_cmd: &str) -> String {
+    let digest = Sha256::digest(full_cmd.as_bytes());
+    let hash_hex = hex::encode(&digest[..16]); // 32 hex chars
+    format!("{}/clawsudo-{}.approved", APPROVAL_DIR, hash_hex)
+}
+
+/// Atomically consume an approval file.
+/// Returns true if this process successfully consumed the approval (i.e., we were the
+/// one to delete it). Returns false if the file didn't exist (already consumed by another
+/// process or never created).
+///
+/// This eliminates the TOCTOU race in check-then-delete by using a single `remove_file()`
+/// call — the filesystem guarantees only one unlink succeeds.
+fn consume_approval(path: &str) -> bool {
+    match std::fs::remove_file(path) {
+        Ok(()) => true,           // We atomically consumed it
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false, // Someone else got it
+        Err(_) => false,          // Permission error or other — treat as not approved
+    }
+}
+
+/// Create an approval file atomically using O_CREAT|O_EXCL (create_new).
+/// This ensures no race condition if two approval grants happen simultaneously.
+#[allow(dead_code)]
+fn create_approval_file(path: &str) -> std::io::Result<()> {
+    ensure_approval_dir();
+    OpenOptions::new()
+        .write(true)
+        .create_new(true) // O_CREAT | O_EXCL — fails if file already exists
+        .mode(0o600)      // Only root can read/write
+        .open(path)?;
+    Ok(())
+}
+
 // ─── Main ───
 
 fn print_help() {
@@ -438,28 +496,30 @@ fn main() -> ExitCode {
             );
             log_line("PENDING", &full_cmd);
 
-            // Create approval file path
-            let mut hasher = DefaultHasher::new();
-            full_cmd.hash(&mut hasher);
-            let hash = hasher.finish();
-            let approval_file = format!("/tmp/clawsudo-{:x}.approved", hash);
+            // Ensure secure approval directory exists (root-only, mode 0700)
+            ensure_approval_dir();
+
+            // SHA-256 based approval filename (not collision-prone DefaultHasher)
+            let approval_file = approval_path(&full_cmd);
 
             if let Some(ref url) = webhook_url {
                 send_slack_sync(
                     url,
                     &format!(
-                        "⚠️ *WARNING* clawsudo awaiting approval for: `{}`\nTo approve: `touch {}`",
+                        "⚠️ *WARNING* clawsudo awaiting approval for: `{}`\nTo approve: `sudo touch {}`",
                         full_cmd, approval_file
                     ),
                 );
             }
 
-            // Wait up to 5 minutes
+            // Wait up to 5 minutes, using atomic consume to prevent TOCTOU races
             let start = Instant::now();
             let timeout = Duration::from_secs(300);
             loop {
-                if Path::new(&approval_file).exists() {
-                    let _ = std::fs::remove_file(&approval_file);
+                // Atomic: try to unlink the file. If we succeed, we consumed the
+                // approval. If ENOENT, either it doesn't exist yet or another
+                // process already consumed it.
+                if consume_approval(&approval_file) {
                     eprintln!("✅ Approved!");
                     log_line("ALLOWED", &full_cmd);
                     let status = std::process::Command::new("sudo")
@@ -487,26 +547,27 @@ fn main() -> ExitCode {
             eprintln!("⏳ No matching rule — awaiting approval (5 min timeout)...");
             log_line("PENDING", &full_cmd);
 
-            let mut hasher = DefaultHasher::new();
-            full_cmd.hash(&mut hasher);
-            let hash = hasher.finish();
-            let approval_file = format!("/tmp/clawsudo-{:x}.approved", hash);
+            // Ensure secure approval directory exists (root-only, mode 0700)
+            ensure_approval_dir();
+
+            // SHA-256 based approval filename (not collision-prone DefaultHasher)
+            let approval_file = approval_path(&full_cmd);
 
             if let Some(ref url) = webhook_url {
                 send_slack_sync(
                     url,
                     &format!(
-                        "⚠️ *WARNING* clawsudo: unknown command awaiting approval: `{}`\nTo approve: `touch {}`",
+                        "⚠️ *WARNING* clawsudo: unknown command awaiting approval: `{}`\nTo approve: `sudo touch {}`",
                         full_cmd, approval_file
                     ),
                 );
             }
 
+            // Wait up to 5 minutes, using atomic consume to prevent TOCTOU races
             let start = Instant::now();
             let timeout = Duration::from_secs(300);
             loop {
-                if Path::new(&approval_file).exists() {
-                    let _ = std::fs::remove_file(&approval_file);
+                if consume_approval(&approval_file) {
                     eprintln!("✅ Approved!");
                     log_line("ALLOWED", &full_cmd);
                     let status = std::process::Command::new("sudo")
@@ -762,5 +823,77 @@ mod tests {
         let args: Vec<String> = vec!["apt-get".into(), "install".into(), "-o".into(), "Dpkg::Pre-Invoke::=sh".into()];
         let full = "apt-get install -o Dpkg::Pre-Invoke::=sh";
         assert!(check_gtfobins("apt-get", &args, full).is_some(), "Dpkg hook should be denied");
+    }
+
+    // ─── Approval file security tests ───
+
+    #[test]
+    fn test_approval_path_uses_sha256() {
+        let path = approval_path("apt install curl");
+        // Should be in secure directory, not /tmp
+        assert!(path.starts_with("/var/run/clawtower/approvals/"));
+        assert!(path.ends_with(".approved"));
+        // Should contain a 32-char hex hash (16 bytes of SHA-256)
+        let filename = path.rsplit('/').next().unwrap();
+        let hash_part = filename
+            .strip_prefix("clawsudo-")
+            .unwrap()
+            .strip_suffix(".approved")
+            .unwrap();
+        assert_eq!(hash_part.len(), 32, "SHA-256 truncated hash should be 32 hex chars");
+        assert!(hash_part.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_approval_path_deterministic() {
+        let path1 = approval_path("apt install curl");
+        let path2 = approval_path("apt install curl");
+        assert_eq!(path1, path2, "Same command should produce same approval path");
+    }
+
+    #[test]
+    fn test_approval_path_different_commands_differ() {
+        let path1 = approval_path("apt install curl");
+        let path2 = approval_path("apt install wget");
+        assert_ne!(path1, path2, "Different commands should produce different approval paths");
+    }
+
+    #[test]
+    fn test_approval_dir_not_tmp() {
+        assert!(!APPROVAL_DIR.starts_with("/tmp"), "Approval dir must not be in /tmp");
+        assert_eq!(APPROVAL_DIR, "/var/run/clawtower/approvals");
+    }
+
+    #[test]
+    fn test_consume_approval_nonexistent() {
+        // Consuming a nonexistent file should return false
+        let result = consume_approval("/tmp/nonexistent-test-file-clawsudo-12345.approved");
+        assert!(!result, "Consuming nonexistent file should return false");
+    }
+
+    #[test]
+    fn test_consume_approval_atomic() {
+        // Create a temp file, consume it, verify it's gone
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.approved");
+        std::fs::write(&path, b"").unwrap();
+        let path_str = path.to_str().unwrap();
+
+        // First consume should succeed
+        assert!(consume_approval(path_str), "First consume should succeed");
+        // Second consume should fail (already consumed)
+        assert!(!consume_approval(path_str), "Second consume should fail — file already gone");
+    }
+
+    #[test]
+    fn test_create_approval_file_exclusive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test-excl.approved");
+        let path_str = path.to_str().unwrap();
+
+        // First create should succeed
+        assert!(create_approval_file(path_str).is_ok());
+        // Second create should fail (O_EXCL)
+        assert!(create_approval_file(path_str).is_err(), "Double-create should fail with O_EXCL");
     }
 }

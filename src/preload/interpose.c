@@ -11,6 +11,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -274,18 +275,52 @@ int openat(int dirfd, const char *pathname, int flags, ...) {
     }
 
     if (g_enabled && pathname && (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND))) {
-        /* Only check absolute paths (relative paths are harder to resolve without alloc) */
-        if (pathname[0] == '/') {
-            for (int i = 0; i < g_deny_paths_write_count; i++) {
-                size_t dlen = strlen(g_deny_paths_write[i]);
-                if (strncmp(pathname, g_deny_paths_write[i], dlen) == 0) {
-                    if (pathname[dlen] == '\0' || pathname[dlen] == '/') {
-                        char detail[512];
-                        snprintf(detail, sizeof(detail), "openat(write): %s", pathname);
-                        claw_log("DENIED", detail);
-                        errno = EACCES;
-                        return -1;
-                    }
+        const char *check_path = pathname;
+        char resolved[PATH_MAX];
+
+        if (pathname[0] != '/') {
+            /* Relative path — resolve to absolute for policy checking */
+            char dir_buf[PATH_MAX];
+            int resolved_ok = 0;
+
+            if (dirfd == AT_FDCWD) {
+                if (getcwd(dir_buf, sizeof(dir_buf)) != NULL) {
+                    snprintf(resolved, PATH_MAX, "%s/%s", dir_buf, pathname);
+                    check_path = resolved;
+                    resolved_ok = 1;
+                }
+            } else {
+                /* Real fd — read /proc/self/fd/{dirfd} to get directory path */
+                char proc_path[64];
+                snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", dirfd);
+                ssize_t len = readlink(proc_path, dir_buf, PATH_MAX - 1);
+                if (len > 0) {
+                    dir_buf[len] = '\0';
+                    snprintf(resolved, PATH_MAX, "%s/%s", dir_buf, pathname);
+                    check_path = resolved;
+                    resolved_ok = 1;
+                }
+            }
+
+            if (!resolved_ok) {
+                /* Fail-closed: cannot resolve path, deny access */
+                char detail[512];
+                snprintf(detail, sizeof(detail), "openat(write): DENIED unresolvable relative path: %s", pathname);
+                claw_log("DENIED", detail);
+                errno = EACCES;
+                return -1;
+            }
+        }
+
+        for (int i = 0; i < g_deny_paths_write_count; i++) {
+            size_t dlen = strlen(g_deny_paths_write[i]);
+            if (strncmp(check_path, g_deny_paths_write[i], dlen) == 0) {
+                if (check_path[dlen] == '\0' || check_path[dlen] == '/') {
+                    char detail[512];
+                    snprintf(detail, sizeof(detail), "openat(write): %s", check_path);
+                    claw_log("DENIED", detail);
+                    errno = EACCES;
+                    return -1;
                 }
             }
         }

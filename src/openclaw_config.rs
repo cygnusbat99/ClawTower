@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::scanner::{ScanResult, ScanStatus};
+use crate::safe_match::field_exact_match;
 
 /// A detected configuration drift.
 #[derive(Debug, Clone)]
@@ -22,6 +23,7 @@ pub struct ConfigDrift {
 }
 
 /// Fields that indicate a security regression when set to specific values.
+/// These must be fully-qualified dotted paths to match `field_exact_match`.
 const REGRESSION_RULES: &[(&str, &str)] = &[
     ("gateway.auth.mode", "none"),
     ("gateway.bind", "0.0.0.0"),
@@ -32,10 +34,11 @@ const REGRESSION_RULES: &[(&str, &str)] = &[
     ("tools.profile", "full"),      // overly permissive tool access
 ];
 
-/// DM/group policy fields — regression if changed to "open"
+/// DM/group policy fields — regression if changed to "open".
+/// These must be fully-qualified dotted paths to match `field_exact_match`.
 const POLICY_OPEN_FIELDS: &[&str] = &[
-    "dmPolicy",
-    "groupPolicy",
+    "channels.slack.dmPolicy",
+    "channels.slack.groupPolicy",
 ];
 
 /// Extract security-critical fields from OpenClaw JSON config as a flat key-value map.
@@ -111,12 +114,12 @@ pub fn detect_drift(
 
 fn is_security_regression(field: &str, new_value: &str) -> bool {
     for (rule_field, bad_value) in REGRESSION_RULES {
-        if field.ends_with(rule_field) && new_value == *bad_value {
+        if field_exact_match(field, rule_field) && new_value == *bad_value {
             return true;
         }
     }
     for policy_field in POLICY_OPEN_FIELDS {
-        if field.ends_with(policy_field) && new_value == "open" {
+        if field_exact_match(field, policy_field) && new_value == "open" {
             return true;
         }
     }

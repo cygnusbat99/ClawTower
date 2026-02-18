@@ -669,19 +669,18 @@ impl App {
     }
 
     fn run_sudo_action(&mut self, action: &str, password: &str) {
-        let shell_cmd: String = if let Some(path) = action.strip_prefix("save_config:") {
-            format!(
-                "chattr -i '{}' 2>/dev/null; cp /tmp/clawtower-config-save.toml '{}' && chattr +i '{}' && rm -f /tmp/clawtower-config-save.toml && echo 'CONFIG_SAVED'",
-                path, path, path
-            )
-        } else {
-            match action {
-                "install_falco" => "apt-get update -qq && apt-get install -y -qq falco 2>&1 || dnf install -y falco 2>&1 || echo 'INSTALL_FAILED'".to_string(),
-                "install_samhain" => "apt-get update -qq && apt-get install -y -qq samhain 2>&1 || dnf install -y samhain 2>&1 || echo 'INSTALL_FAILED'".to_string(),
-                _ => return,
-            }
+        // Config save uses direct Command execution (no shell) to prevent path injection.
+        // Install actions use shell commands (no user-controlled input).
+        if let Some(path) = action.strip_prefix("save_config:") {
+            self.run_config_save(path, password);
+            return;
+        }
+
+        let shell_cmd: &str = match action {
+            "install_falco" => "apt-get update -qq && apt-get install -y -qq falco 2>&1 || dnf install -y falco 2>&1 || echo 'INSTALL_FAILED'",
+            "install_samhain" => "apt-get update -qq && apt-get install -y -qq samhain 2>&1 || dnf install -y samhain 2>&1 || echo 'INSTALL_FAILED'",
+            _ => return,
         };
-        let shell_cmd = shell_cmd.as_str();
 
         let result = if nix_is_root() || password.is_empty() {
             std::process::Command::new("bash")
@@ -719,9 +718,7 @@ impl App {
             Ok(output) => {
                 let out = String::from_utf8_lossy(&output.stdout);
                 let err = String::from_utf8_lossy(&output.stderr);
-                if out.contains("CONFIG_SAVED") {
-                    self.config_saved_message = Some("✅ Saved!".to_string());
-                } else if output.status.success() && !out.contains("INSTALL_FAILED") {
+                if output.status.success() && !out.contains("INSTALL_FAILED") {
                     self.invalidate_tool_cache();
                     self.config_saved_message = Some("✅ Installed! Refresh with Left/Right.".to_string());
                 } else if err.contains("incorrect password") || err.contains("Sorry, try again") {
@@ -734,6 +731,76 @@ impl App {
                 self.config_saved_message = Some(format!("❌ {}", e));
             }
         }
+        self.refresh_fields();
+    }
+
+    /// Execute config save as individual Command calls — no shell interpolation.
+    /// This prevents shell injection via crafted config file paths.
+    fn run_config_save(&mut self, path: &str, password: &str) {
+        let use_sudo = !nix_is_root() && !password.is_empty();
+        let tmp = "/tmp/clawtower-config-save.toml";
+
+        // Helper: run a command, optionally wrapped with sudo -S + piped password.
+        let run = |prog: &str, args: &[&str]| -> Result<std::process::Output, std::io::Error> {
+            if use_sudo {
+                use std::io::Write;
+                let mut sudo_args = vec!["-S", prog];
+                sudo_args.extend_from_slice(args);
+                let mut child = std::process::Command::new("sudo")
+                    .args(&sudo_args)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()?;
+                if let Some(ref mut stdin) = child.stdin {
+                    let _ = writeln!(stdin, "{}", password);
+                }
+                child.wait_with_output()
+            } else {
+                std::process::Command::new(prog)
+                    .args(args)
+                    .output()
+            }
+        };
+
+        // Step 1: chattr -i (ignore errors — file may not have immutable flag)
+        let _ = run("chattr", &["-i", path]);
+
+        // Step 2: cp tmp file to destination
+        let cp_result = run("cp", &[tmp, path]);
+        let ok = match &cp_result {
+            Ok(output) => {
+                let err = String::from_utf8_lossy(&output.stderr);
+                if err.contains("incorrect password") || err.contains("Sorry, try again") {
+                    self.sudo_popup = None;
+                    self.config_saved_message = Some("❌ Wrong password".to_string());
+                    self.refresh_fields();
+                    return;
+                }
+                output.status.success()
+            }
+            Err(_) => false,
+        };
+
+        if !ok {
+            self.sudo_popup = None;
+            let msg = match cp_result {
+                Ok(output) => format!("❌ Config save failed: {}", String::from_utf8_lossy(&output.stderr).chars().take(80).collect::<String>()),
+                Err(e) => format!("❌ {}", e),
+            };
+            self.config_saved_message = Some(msg);
+            self.refresh_fields();
+            return;
+        }
+
+        // Step 3: chattr +i (re-protect)
+        let _ = run("chattr", &["+i", path]);
+
+        // Step 4: clean up tmp file
+        let _ = run("rm", &["-f", tmp]);
+
+        self.sudo_popup = None;
+        self.config_saved_message = Some("✅ Saved!".to_string());
         self.refresh_fields();
     }
 }

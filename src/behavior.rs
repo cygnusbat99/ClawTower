@@ -16,6 +16,7 @@ use std::fmt;
 
 use crate::alerts::Severity;
 use crate::auditd::ParsedEvent;
+use crate::safe_match;
 
 /// Categories of suspicious behavior detected by the hardcoded rules engine.
 ///
@@ -321,10 +322,52 @@ const SHELL_PROFILE_PATHS: &[&str] = &[
     "/etc/profile.d/",
 ];
 
-/// Check if a path is a ClawTower guard path (allowlisted for LD_PRELOAD)
+/// Known install paths for ClawTower's LD_PRELOAD guard library.
+const CLAWTOWER_GUARD_PATHS: &[&str] = &[
+    "/usr/local/lib/libclawguard.so",
+    "/usr/local/lib/clawtower/libclawguard.so",
+];
+
+/// Check if a value references ClawTower's own guard library (allowlisted for LD_PRELOAD).
+///
+/// Uses exact path matching against known install locations rather than substring
+/// matching, which could be bypassed by an attacker naming a malicious library
+/// something like `/tmp/not-clawguard-evil.so`.
 fn is_clawtower_guard(value: &str) -> bool {
-    value.contains("clawguard") || value.contains("clawtower")
-        || value.contains("/usr/local/lib/libclawguard.so")
+    CLAWTOWER_GUARD_PATHS.iter().any(|path| value.contains(path))
+}
+
+/// Extract hostnames from a list of command arguments.
+///
+/// Scans each argument for URL-like patterns (`https://host/...`, `http://host/...`)
+/// and bare `host:port` patterns, returning the hostname portions. This is used to
+/// check exfiltration tool targets against the safe-hosts list without substring
+/// matching the entire command line.
+fn extract_hostnames_from_args(args: &[String]) -> Vec<String> {
+    let mut hostnames = Vec::new();
+    for arg in args {
+        // Match URLs: scheme://host[:port][/path...]
+        if let Some(rest) = arg.strip_prefix("https://").or_else(|| arg.strip_prefix("http://")) {
+            // Host ends at '/', ':', '?', '#', or end-of-string
+            let host = rest.split(&['/', ':', '?', '#'][..]).next().unwrap_or("");
+            if !host.is_empty() {
+                hostnames.push(host.to_lowercase());
+            }
+        }
+        // Also check for bare host:port (e.g., "evil.com:8080")
+        else if let Some(colon_pos) = arg.rfind(':') {
+            let maybe_host = &arg[..colon_pos];
+            let after_colon = &arg[colon_pos + 1..];
+            // Only treat as host:port if the part after colon is numeric
+            if !maybe_host.is_empty()
+                && !maybe_host.contains('/')
+                && after_colon.chars().all(|c| c.is_ascii_digit())
+            {
+                hostnames.push(maybe_host.to_lowercase());
+            }
+        }
+    }
+    hostnames
 }
 
 /// Detect LD_PRELOAD persistence: writing LD_PRELOAD= or export LD_PRELOAD to
@@ -382,7 +425,7 @@ const STATIC_COMPILE_PATTERNS: &[&str] = &[
 const SSH_KEY_INJECTION_PATTERNS: &[&str] = &[
     ".ssh/authorized_keys",
     "/root/.ssh/authorized_keys",
-    "/home/*/ssh/authorized_keys",
+    "/home/*/.ssh/authorized_keys",
 ];
 
 /// History tampering patterns
@@ -790,7 +833,7 @@ pub fn classify_behavior(event: &ParsedEvent) -> Option<(BehaviorCategory, Sever
         }
 
         // --- CRITICAL: History tampering ---
-        if ["rm", "mv", "cp", "ln", ">", "truncate", "unset", "export"].contains(&binary) ||
+        if ["rm", "mv", "cp", "ln", "truncate", "unset", "export"].contains(&binary) ||
            cmd_lower.contains("histsize=0") || cmd_lower.contains("histfilesize=0") {
             for pattern in HISTORY_TAMPER_PATTERNS {
                 if cmd.contains(pattern) {
@@ -979,8 +1022,8 @@ pub fn classify_behavior(event: &ParsedEvent) -> Option<(BehaviorCategory, Sever
         }
 
         if EXFIL_COMMANDS.iter().any(|&c| binary.eq_ignore_ascii_case(c)) {
-            let full_cmd_lower = args.join(" ").to_lowercase();
-            let is_safe = SAFE_HOSTS.iter().any(|&h| full_cmd_lower.contains(h));
+            let hostnames = extract_hostnames_from_args(args);
+            let is_safe = hostnames.iter().any(|h| safe_match::is_safe_host(h, SAFE_HOSTS));
             if !is_safe {
                 return Some((BehaviorCategory::DataExfiltration, Severity::Critical));
             }
@@ -2235,14 +2278,10 @@ mod tests {
         // ln -sf /dev/null ~/.bash_history
         let event = make_exec_event(&["ln", "-sf", "/dev/null", "/home/user/.bash_history"]);
         let result = classify_behavior(&event);
-        // ln is not in the history tamper binary check (rm/mv/cp/>/truncate/unset/export)
-        // But .bash_history is in HISTORY_TAMPER_PATTERNS - cmd.contains should catch it
-        // Actually the binary check is: ["rm", "mv", "cp", ">", "truncate", "unset", "export"]
-        // ln is NOT in that list, and histsize/histfilesize won't match
-        // FINDING: ln -sf /dev/null ~/.bash_history bypasses history tamper detection!
-        if result.is_none() {
-            // Confirmed bypass
-        }
+        // ln is in the history tamper binary check (rm/mv/cp/ln/truncate/unset/export)
+        // and .bash_history is in HISTORY_TAMPER_PATTERNS
+        assert_eq!(result, Some((BehaviorCategory::SecurityTamper, Severity::Critical)),
+            "ln -sf /dev/null ~/.bash_history should be detected as history tampering");
     }
 
     #[test]
@@ -3229,12 +3268,21 @@ mod tests {
     }
 
     #[test]
-    fn test_ld_preload_persistence_clawtower_keyword_allowed() {
+    fn test_ld_preload_persistence_clawtower_subdir_allowed() {
+        let result = check_ld_preload_persistence(
+            "echo 'LD_PRELOAD=/usr/local/lib/clawtower/libclawguard.so' >> .bashrc",
+            None,
+        );
+        assert!(result.is_none(), "Known ClawTower guard path should be allowlisted");
+    }
+
+    #[test]
+    fn test_ld_preload_persistence_unknown_clawtower_path_rejected() {
         let result = check_ld_preload_persistence(
             "echo 'LD_PRELOAD=/opt/clawtower/lib/hook.so' >> .bashrc",
             None,
         );
-        assert!(result.is_none(), "Path containing 'clawtower' should be allowlisted");
+        assert!(result.is_some(), "Unknown path with 'clawtower' substring should NOT be auto-allowlisted");
     }
 
     #[test]
@@ -3260,7 +3308,14 @@ mod tests {
     #[test]
     fn test_is_ld_preload_persistence_line_allows_clawtower() {
         assert!(!is_ld_preload_persistence_line("LD_PRELOAD=/usr/local/lib/libclawguard.so"));
-        assert!(!is_ld_preload_persistence_line("export LD_PRELOAD=/opt/clawtower/guard.so"));
+        assert!(!is_ld_preload_persistence_line("export LD_PRELOAD=/usr/local/lib/clawtower/libclawguard.so"));
+    }
+
+    #[test]
+    fn test_is_ld_preload_persistence_line_rejects_fake_clawtower() {
+        // Unknown paths should NOT be allowlisted even if they contain "clawtower" or "clawguard"
+        assert!(is_ld_preload_persistence_line("export LD_PRELOAD=/opt/clawtower/guard.so"));
+        assert!(is_ld_preload_persistence_line("LD_PRELOAD=/tmp/clawguard-fake.so"));
     }
 
     #[test]

@@ -7,13 +7,11 @@
 
 use anyhow::Result;
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
-use std::fs::File;
 use std::path::Path;
 use tokio::sync::mpsc;
-use tokio::time::{sleep, Duration};
 
 use crate::alerts::{Alert, Severity};
+use crate::safe_tail::SafeTailer;
 
 /// Map Falco priority string to our Severity
 fn falco_priority_to_severity(priority: &str) -> Severity {
@@ -43,63 +41,16 @@ pub async fn tail_falco_log(
     path: &Path,
     tx: mpsc::Sender<Alert>,
 ) -> Result<()> {
-    // Wait for log file to appear, but don't wait forever.
-    // If Falco isn't installed/running, give up after a few attempts.
-    let max_wait_attempts = 3;
-    let mut attempts = 0;
-    while !path.exists() {
-        attempts += 1;
-        if attempts > max_wait_attempts {
-            let _ = tx.send(Alert::new(
-                Severity::Warning,
-                "falco",
-                &format!(
-                    "Falco log not found at {} after {}s — Falco may not be installed. \
-                     Disable with falco.enabled=false in config.",
-                    path.display(),
-                    max_wait_attempts * 30
-                ),
-            )).await;
-            return Ok(());
-        }
-        let _ = tx.send(Alert::new(
-            Severity::Info,
-            "falco",
-            &format!("Waiting for Falco log at {} (attempt {}/{})...", path.display(), attempts, max_wait_attempts),
-        )).await;
-        sleep(Duration::from_secs(30)).await;
-    }
+    let tailer = SafeTailer::new(path);
+    let mut rx = tailer.tail_lines(tx.clone(), "falco").await;
 
-    let mut file = File::open(path)?;
-    file.seek(SeekFrom::End(0))?;
-    let mut reader = BufReader::new(file);
-    let mut line = String::new();
-
-    let _ = tx.send(Alert::new(
-        Severity::Info,
-        "falco",
-        "Falco log monitor started",
-    )).await;
-
-    loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => sleep(Duration::from_millis(500)).await,
-            Ok(_) => {
-                if let Some(alert) = parse_falco_line(&line) {
-                    let _ = tx.send(alert).await;
-                }
-            }
-            Err(e) => {
-                let _ = tx.send(Alert::new(
-                    Severity::Warning,
-                    "falco",
-                    &format!("Error reading Falco log: {}", e),
-                )).await;
-                sleep(Duration::from_secs(5)).await;
-            }
+    while let Some(line) = rx.recv().await {
+        if let Some(alert) = parse_falco_line(&line) {
+            let _ = tx.send(alert).await;
         }
     }
+
+    Ok(())
 }
 
 #[cfg(test)]

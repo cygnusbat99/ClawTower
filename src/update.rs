@@ -277,7 +277,8 @@ fn get_target_version(args: &[String]) -> Option<String> {
 ///
 /// Supports `--check` (dry run), `--version <ver>` (specific release),
 /// `--binary <path>` (custom binary requiring admin key), and `--key <key>`.
-/// GitHub release path uses SHA-256 + optional Ed25519 signature verification.
+/// GitHub release path uses SHA-256 + mandatory Ed25519 signature verification.
+/// Rejects downgrades: the remote version must be strictly newer than the current version.
 pub fn run_update(args: &[String]) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
     eprintln!("🛡️  ClawTower Self-Update");
@@ -319,8 +320,12 @@ pub fn run_update(args: &[String]) -> Result<()> {
 
         eprintln!("Release: {} ({})", tag, asset_name());
 
-        if remote_version == current_version {
-            eprintln!("✅ Already running the latest version");
+        if !is_newer_version(current_version, remote_version) {
+            if remote_version == current_version {
+                eprintln!("✅ Already running the latest version");
+            } else {
+                eprintln!("Update rejected: version {} is not newer than current v{}", tag, current_version);
+            }
             return Ok(());
         }
 
@@ -336,17 +341,14 @@ pub fn run_update(args: &[String]) -> Result<()> {
 
         let data = download_and_verify(&download_url, sha256_url.as_deref())?;
 
-        // Verify Ed25519 signature if available
-        if let Some(ref sig_url) = sig_url {
-            eprintln!("Verifying Ed25519 signature...");
-            let client = reqwest::blocking::Client::builder()
-                .user_agent("clawtower-updater")
-                .build()?;
-            let sig_bytes = client.get(sig_url).send()?.error_for_status()?.bytes()?.to_vec();
-            verify_release_signature(&data, &sig_bytes)?;
-        } else {
-            eprintln!("⚠️  No .sig file in release — skipping signature verification (pre-signing release)");
-        }
+        // Verify Ed25519 signature (mandatory)
+        let sig_url = sig_url.context("Update rejected: missing Ed25519 signature")?;
+        eprintln!("Verifying Ed25519 signature...");
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("clawtower-updater")
+            .build()?;
+        let sig_bytes = client.get(&sig_url).send()?.error_for_status()?.bytes()?.to_vec();
+        verify_release_signature(&data, &sig_bytes)?;
 
         (data, tag)
     };
@@ -424,7 +426,7 @@ pub fn is_newer_version(current: &str, remote: &str) -> bool {
 /// Background auto-updater loop. Checks GitHub for new releases and installs them.
 ///
 /// Runs forever, sleeping for `interval_secs` between checks. On finding a newer
-/// release with a valid checksum (and optional Ed25519 signature), downloads and
+/// release with a valid checksum and Ed25519 signature, downloads and
 /// replaces the binary, notifies Slack, and restarts the systemd service.
 pub async fn run_auto_updater(alert_tx: mpsc::Sender<Alert>, interval_secs: u64, mode: String) {
     let mut last_notified_version = String::new();
@@ -468,22 +470,20 @@ pub async fn run_auto_updater(alert_tx: mpsc::Sender<Alert>, interval_secs: u64,
                 bail!("Release has no checksum file — refusing unverified binary");
             }
 
+            let sig_url = sig_url.context("Update rejected: missing Ed25519 signature")?;
+
             let dl_url = download_url.clone();
             let sha_url = sha256_url.clone();
             let sig_url2 = sig_url.clone();
-            let (binary_data, sig_bytes) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+            let (binary_data, sig_bytes) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, Vec<u8>)> {
                 let data = download_and_verify(&dl_url, sha_url.as_deref())?;
-                let sig = if let Some(ref su) = sig_url2 {
-                    let client = reqwest::blocking::Client::builder()
-                        .user_agent("clawtower-updater").build()?;
-                    Some(client.get(su).send()?.error_for_status()?.bytes()?.to_vec())
-                } else { None };
+                let client = reqwest::blocking::Client::builder()
+                    .user_agent("clawtower-updater").build()?;
+                let sig = client.get(&sig_url2).send()?.error_for_status()?.bytes()?.to_vec();
                 Ok((data, sig))
             }).await.context("spawn_blocking join error")??;
 
-            if let Some(ref sig) = sig_bytes {
-                verify_release_signature(&binary_data, sig)?;
-            }
+            verify_release_signature(&binary_data, &sig_bytes)?;
 
             // Binary replace (chattr dance)
             let binary_path = current_binary_path()?;
