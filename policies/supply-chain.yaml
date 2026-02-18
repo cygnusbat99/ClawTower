@@ -1,0 +1,66 @@
+# ClawTower Supply-Chain Defense Policies
+#
+# Detection rules for supply-chain attack patterns observed via command execution.
+# These complement the sentinel skill intake scanner which checks file content.
+
+rules:
+  # ── Skill Installation Monitoring ──────────────────────────────────────────
+  - name: "detect-skill-install-from-url"
+    description: "Skill installation from external URL may introduce malicious code"
+    match:
+      command_contains:
+        - "skill install http"
+        - "skill add http"
+        - "skill fetch http"
+    action: warning
+
+  - name: "detect-pip-untrusted-index"
+    description: "pip install from non-default index (potential typosquatting)"
+    match:
+      command_contains:
+        - "pip install --index-url"
+        - "pip install --extra-index-url"
+        - "pip3 install --index-url"
+        - "pip3 install --extra-index-url"
+    action: warning
+
+  - name: "detect-npm-untrusted-registry"
+    description: "npm install from non-default registry"
+    match:
+      command_contains:
+        - "npm install --registry"
+        - "npm i --registry"
+        - "yarn add --registry"
+    action: warning
+
+  - name: "detect-base64-decode-exec"
+    description: "Base64 decoded content piped to shell execution"
+    match:
+      command_contains:
+        - "base64 -d | sh"
+        - "base64 -d | bash"
+        - "base64 --decode | sh"
+        - "base64 --decode | bash"
+    action: critical
+
+  - name: "detect-paste-service-fetch"
+    description: "Fetching from known paste/snippet services"
+    match:
+      command_contains:
+        - "rentry.co"
+        - "glot.io"
+        - "pastebin.com"
+        - "hastebin.com"
+        - "dpaste.org"
+        - "transfer.sh"
+        - "ix.io"
+        - "0x0.st"
+    action: warning
+
+  - name: "detect-password-archive-extract"
+    description: "Extracting password-protected archives (hiding payload contents)"
+    match:
+      command_contains:
+        - "unzip -P"
+        - "7z x -p"
+    action: warning

