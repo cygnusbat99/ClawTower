@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Layer 3: Memory Sentinel — hardware watchpoints, memory integrity scanning,
 //! cross-memory payload corruption, and process memory map parsing.
 //!

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Correlator Engine — the sentinel's brain.
 //!
 //! Ingests events from all defense layers (LD_PRELOAD, eBPF, seccomp,

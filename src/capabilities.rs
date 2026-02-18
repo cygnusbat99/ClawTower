@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Runtime platform capability detection for ClawTower.
 //!
 //! Probes the running system empirically — attempts the actual syscall or operation

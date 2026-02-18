@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Kernel-level syscall enforcement via seccomp-BPF.
 //!
 //! Phase 2 of the predictive interception system. Builds and installs a BPF

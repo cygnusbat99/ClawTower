@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Forensic dump capture and incident response actions.
 //!
 //! Implements §9 (Forensic Dump Format) and §8.2-8.3 (Response Actions / Escalation Chains)

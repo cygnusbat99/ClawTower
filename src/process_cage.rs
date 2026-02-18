@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Process Cage — Layer 4 containment for compromised AI agents.
 //!
 //! Provides cgroup freezing, resource limits, network isolation, PID enumeration,
