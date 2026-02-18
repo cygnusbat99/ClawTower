@@ -123,46 +123,11 @@ else
     warn "auditctl not available — skipping tamper-detection audit rules"
 fi
 
-# ── 5. AppArmor profile ──────────────────────────────────────────────────────
-log "Setting up AppArmor profiles..."
-if command -v aa-enabled &>/dev/null && aa-enabled --quiet 2>/dev/null; then
-    log "  AppArmor is enabled"
-elif command -v apparmor_parser &>/dev/null; then
-    log "  AppArmor parser found (kernel support may be missing — profiles installed for next boot)"
-else
-    log "  INFO: AppArmor not available on this system — skipping AppArmor setup entirely"
-fi
-if command -v apparmor_parser &>/dev/null; then
-    cat > /etc/apparmor.d/clawtower.deny-openclaw <<'APPARMOR'
-# AppArmor profile: deny openclaw user access to ClawTower paths
-# This is loaded as a hat/profile restricting the openclaw user.
-
-abi <abi/3.0>,
-
-profile clawtower.deny-openclaw {
-  # Deny openclaw user access to all ClawTower files
-  deny /usr/local/bin/clawtower rwxmlk,
-  deny /etc/clawtower/** rwxmlk,
-  deny /etc/clawtower/ rwxmlk,
-  deny /var/log/clawtower/** rwxmlk,
-  deny /var/log/clawtower/ rwxmlk,
-
-  # Allow everything else (this profile is applied to openclaw's shell)
-  /** rwxmlk,
-}
-APPARMOR
-    apparmor_parser -r /etc/apparmor.d/clawtower.deny-openclaw 2>/dev/null \
-        && log "  AppArmor profile clawtower.deny-openclaw loaded" \
-        || warn "  AppArmor profile load failed (non-fatal — if re-installing after failed uninstall, reboot first)"
-    # Load config protection profile if available
-    PROTECT_PROFILE_SRC="$(dirname "$SCRIPT_PATH")/../apparmor/etc.clawtower.protect"
-    if [[ -f "$PROTECT_PROFILE_SRC" ]]; then
-        cp "$PROTECT_PROFILE_SRC" /etc/apparmor.d/etc.clawtower.protect
-        apparmor_parser -r /etc/apparmor.d/etc.clawtower.protect 2>/dev/null \
-            && log "  AppArmor profile etc.clawtower.protect loaded" \
-            || warn "  AppArmor config protection profile load failed (non-fatal)"
-    fi
-fi
+# ── 5. AppArmor profiles (via embedded binary) ──────────────────────────────
+log "Setting up AppArmor profiles (via embedded binary)..."
+/usr/local/bin/clawtower setup-apparmor --quiet \
+    && log "  AppArmor/capability setup complete" \
+    || warn "  AppArmor setup returned non-zero (non-fatal)"
 
 # ── 6. Drop capabilities from openclaw user ──────────────────────────────────
 log "Dropping dangerous capabilities from openclaw user..."

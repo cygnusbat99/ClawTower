@@ -71,12 +71,12 @@ profile openclaw /home/openclaw/.openclaw/** flags=(enforce) {
   # ============================
   # DENY: Watchdog files (CRITICAL)
   # ============================
-  deny /etc/clawav/** rwxl,
-  deny /etc/clawav/ rwxl,
-  deny /opt/openclawav/** rwxl,
-  deny /var/log/clawav/** rwxl,
-  deny /var/log/clawav/ rwxl,
-  deny /usr/local/bin/clawav rwxl,
+  deny /etc/clawtower/** rwxl,
+  deny /etc/clawtower/ rwxl,
+  deny /usr/local/bin/clawtower rwxl,
+  deny /usr/local/bin/clawsudo rwxl,
+  deny /var/log/clawtower/** rwxl,
+  deny /var/log/clawtower/ rwxl,
   deny /etc/apparmor.d/** rwxl,
   deny /etc/audit/** rwxl,
   deny /etc/falco/** rwxl,

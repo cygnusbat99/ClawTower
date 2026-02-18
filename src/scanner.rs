@@ -1801,7 +1801,7 @@ pub fn scan_apparmor_protection() -> ScanResult {
                 ScanResult::new(
                     "apparmor_protection",
                     ScanStatus::Warn,
-                    "AppArmor profiles not loaded — run scripts/setup-apparmor.sh",
+                    "AppArmor profiles not loaded — run 'clawtower setup-apparmor'",
                 )
             }
         }
@@ -1936,6 +1936,7 @@ impl SecurityScanner {
         results.push(scan_openclaw_running_as_root());
         results.push(scan_openclaw_hardcoded_secrets());
         results.push(scan_openclaw_version_freshness());
+        results.push(scan_openclaw_credential_audit());
 
         // OpenClaw security integration (config-driven)
         if openclaw_config.enabled {
@@ -2402,6 +2403,45 @@ fn scan_openclaw_version_freshness() -> ScanResult {
     }
 }
 
+/// Verify that auditd read-watch rules are installed for critical credential files.
+///
+/// Infostealers read credential files without modifying them, so sentinel (inotify)
+/// can't detect the access. Auditd `-p r` rules are the only kernel-level defense
+/// against silent reads. This scanner confirms those rules are actually loaded.
+fn scan_openclaw_credential_audit() -> ScanResult {
+    // Critical files that must have auditd read-watch rules
+    let required_watches: &[&str] = &[
+        "device.json",
+        "openclaw.json",
+        "auth-profiles.json",
+        "gateway.yaml",
+        ".aws/credentials",
+        ".ssh/id_",
+    ];
+
+    match run_cmd_with_sudo("auditctl", &["-l"]) {
+        Ok(rules) => {
+            let missing: Vec<&str> = required_watches.iter()
+                .filter(|watch| !rules.lines().any(|line| line.contains(**watch) && line.contains("-p r")))
+                .copied()
+                .collect();
+
+            if missing.is_empty() {
+                ScanResult::new("openclaw:credential_audit", ScanStatus::Pass,
+                    &format!("All {} credential read-watch rules installed", required_watches.len()))
+            } else {
+                ScanResult::new("openclaw:credential_audit", ScanStatus::Fail,
+                    &format!("Missing auditd read-watch rules for: {}. Run: clawtower setup audit-rules",
+                        missing.join(", ")))
+            }
+        }
+        Err(_) => {
+            ScanResult::new("openclaw:credential_audit", ScanStatus::Warn,
+                "Cannot check auditd rules (auditctl not available or no permission)")
+        }
+    }
+}
+
 fn scan_openclaw_security() -> Vec<ScanResult> {
     let mut results = Vec::new();
 
@@ -2469,6 +2509,8 @@ fn scan_openclaw_security() -> Vec<ScanResult> {
     results.push(check_path_permissions(state_dir, 0o700, "state_dir"));
     results.push(check_path_permissions(
         &format!("{}/openclaw.json", state_dir), 0o600, "config"));
+    results.push(check_path_permissions(
+        &format!("{}/device.json", state_dir), 0o600, "device_key"));
 
     // Check credential files aren't group/world readable
     let cred_dir = format!("{}/credentials", state_dir);

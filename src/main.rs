@@ -29,6 +29,7 @@
 mod admin;
 mod alerts;
 mod aggregator;
+mod apparmor;
 mod capabilities;
 mod correlator;
 mod memory_sentinel;
@@ -97,6 +98,7 @@ COMMANDS:
     setup --source       Build from source + install
     setup --auto         Install + start service automatically
     harden               Apply tamper-proof "swallowed key" hardening
+    setup-apparmor       Install AppArmor profiles (or pam_cap fallback)
     uninstall            Reverse hardening + remove ClawTower (requires admin key)
     sync                 Update SecureClaw pattern databases
     logs                 Tail the service logs (journalctl)
@@ -380,6 +382,15 @@ async fn async_main() -> Result<()> {
         }
         "harden" => {
             return run_script("install.sh", &rest_args);
+        }
+        "setup-apparmor" => {
+            let quiet = rest_args.iter().any(|a| a == "--quiet" || a == "-q");
+            let result = apparmor::setup(quiet);
+            if !result.any_protection() {
+                eprintln!("No AppArmor or pam_cap protection could be applied.");
+                std::process::exit(1);
+            }
+            return Ok(());
         }
         "uninstall" => {
             return run_script("uninstall.sh", &rest_args);
