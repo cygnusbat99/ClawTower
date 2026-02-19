@@ -9,14 +9,55 @@ BINARY_SRC="$(dirname "$SCRIPT_PATH")/../target/release/clawtower"
 CONFIG_SRC="$(dirname "$SCRIPT_PATH")/../config.toml"
 INSTALLED_BIN="/usr/local/bin/clawtower"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+# ── Terminal UI ──────────────────────────────────────────────────────────────
+if [[ -t 1 ]] || [[ -t 2 ]] || [[ -n "${FORCE_COLOR:-}" ]]; then
+    RED='\033[38;5;167m'
+    GREEN='\033[38;5;108m'
+    AMBER='\033[38;5;179m'
+    YELLOW='\033[38;5;179m'
+    CYAN='\033[38;5;109m'
+    DIM='\033[2m'
+    BOLD='\033[1m'
+    NC='\033[0m'
+else
+    RED='' GREEN='' AMBER='' YELLOW='' CYAN='' DIM='' BOLD='' NC=''
+fi
 
-log()  { echo -e "${GREEN}[INSTALL]${NC} $*"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
-die()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+TERM_WIDTH=$(tput cols 2>/dev/null || echo 72)
+[[ "$TERM_WIDTH" -gt 80 ]] && TERM_WIDTH=80
+
+log()  { echo -e "  ${GREEN}✓${NC} $*"; }
+warn() { echo -e "  ${AMBER}▲${NC} $*"; }
+info() { echo -e "  ${DIM}·${NC} ${DIM}$*${NC}"; }
+die()  { echo -e "\n  ${RED}✗ $*${NC}\n" >&2; exit 1; }
+
+header() {
+    local title="$1" subtitle="${2:-}"
+    local line
+    line=$(printf '─%.0s' $(seq 1 $((TERM_WIDTH - 6))))
+    echo ""
+    printf "  ${AMBER}╭─${NC} ${BOLD}%s${NC}\n" "$title"
+    [[ -n "$subtitle" ]] && printf "  ${AMBER}│${NC}  ${DIM}%s${NC}\n" "$subtitle"
+    echo -e "  ${AMBER}╰${line}${NC}"
+    echo ""
+}
+
+danger_header() {
+    local title="$1" subtitle="${2:-}"
+    local line
+    line=$(printf '─%.0s' $(seq 1 $((TERM_WIDTH - 6))))
+    echo ""
+    printf "  ${RED}╭─${NC} ${RED}${BOLD}%s${NC}\n" "$title"
+    [[ -n "$subtitle" ]] && printf "  ${RED}│${NC}  ${DIM}%s${NC}\n" "$subtitle"
+    echo -e "  ${RED}╰${line}${NC}"
+    echo ""
+}
+
+sep() {
+    local line
+    line=$(printf '─%.0s' $(seq 1 $((TERM_WIDTH - 4))))
+    echo -e "  ${DIM}${line}${NC}"
+}
 
 # chattr wrapper: tries direct chattr first, falls back to systemd-run
 # (bypasses dropped CAP_LINUX_IMMUTABLE in the current session's bounding set)
@@ -64,6 +105,78 @@ if id -u "$AGENT_GROUP" &>/dev/null; then
     # 750: owner full, group read+traverse for .openclaw config dir
     chmod 750 "$AGENT_HOME/.openclaw" 2>/dev/null || true
     log "Set $AGENT_HOME to 710, $AGENT_HOME/.openclaw to 750 (sentinel access)"
+fi
+
+# ── 1c. ACL grants — give clawtower read access to agent-owned files ─────────
+# The agent may chmod 600 its credential files, blocking clawtower (which runs
+# as a separate user). POSIX ACLs override the mode bits without changing them,
+# so the agent still sees 600 but clawtower gets the access sentinel needs for
+# shadow-copy comparison and tamper restoration.
+#
+# Usage:  acl_grant <user> <permission> <path> [<path> ...]
+#   user:       system user to grant access to (e.g. "clawtower")
+#   permission: ACL permission string (e.g. "r", "rx", "rw")
+#   path:       file or directory; non-existent paths are silently skipped
+#
+# For directories, a default ACL is also set so new files inherit the grant.
+
+ACL_AVAILABLE=0
+acl_init() {
+    if command -v setfacl &>/dev/null; then
+        ACL_AVAILABLE=1
+        return 0
+    fi
+    # Try to install acl package
+    if command -v apt-get &>/dev/null; then
+        apt-get install -y acl &>/dev/null && ACL_AVAILABLE=1 && return 0
+    fi
+    warn "setfacl not available — ACL grants will be skipped"
+    return 1
+}
+
+acl_grant() {
+    [[ $ACL_AVAILABLE -eq 1 ]] || return 0
+    local user="$1" perm="$2"
+    shift 2
+    for path in "$@"; do
+        [[ -e "$path" ]] || continue
+        if setfacl -m "u:${user}:${perm}" "$path" 2>/dev/null; then
+            log "  ACL u:${user}:${perm} → $path"
+        else
+            warn "  ACL failed: u:${user}:${perm} → $path"
+            continue
+        fi
+        # For directories, set default ACL so new files inherit the grant
+        if [[ -d "$path" ]]; then
+            setfacl -m "d:u:${user}:${perm}" "$path" 2>/dev/null \
+                || warn "  ACL default failed: d:u:${user}:${perm} → $path"
+        fi
+    done
+}
+
+if acl_init; then
+    log "Setting POSIX ACLs for sentinel file access..."
+
+    # Credential files the agent may chmod 600 — sentinel needs read for
+    # shadow comparison and tamper restoration on Protected-policy paths.
+    acl_grant clawtower r \
+        "$AGENT_HOME/.openclaw/device.json" \
+        "$AGENT_HOME/.openclaw/openclaw.json" \
+        "$AGENT_HOME/.openclaw/settings.json" \
+        "$AGENT_HOME/.openclaw/gateway.yaml"
+
+    # Credential directories — default ACL ensures future files are readable
+    acl_grant clawtower rx \
+        "$AGENT_HOME/.openclaw/credentials" \
+        "$AGENT_HOME/.openclaw/credentials/whatsapp"
+
+    # Identity files (Protected policy) — sentinel needs read for diff/restore
+    acl_grant clawtower r \
+        "$AGENT_HOME/.openclaw/workspace/SOUL.md" \
+        "$AGENT_HOME/.openclaw/workspace/AGENTS.md" \
+        "$AGENT_HOME/.openclaw/workspace/MEMORY.md" \
+        "$AGENT_HOME/.openclaw/workspace/IDENTITY.md" \
+        "$AGENT_HOME/.openclaw/workspace/USER.md"
 fi
 
 # ── 2. Install binary and config ─────────────────────────────────────────────
@@ -299,15 +412,26 @@ systemctl start clawtower || warn "Service start failed — check 'journalctl -u
 
 # ── 11. Self-destruct ────────────────────────────────────────────────────────
 log "Installation complete!"
+danger_header "ClawTower installed and hardened" "The swallowed key is now in effect"
+
+echo -e "  ${BOLD}Status${NC}"
+echo -e "    ${DIM}Binaries${NC}   /usr/local/bin/clawtower, /usr/local/bin/clawsudo"
+echo -e "    ${DIM}Config${NC}     /etc/clawtower/config.toml ${DIM}(immutable)${NC}"
+echo -e "    ${DIM}Overrides${NC}  /etc/clawtower/config.d/"
+echo -e "    ${DIM}Logs${NC}       journalctl -u clawtower -f"
 echo ""
-echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  ClawTower installed and hardened.                         ║${NC}"
-echo -e "${GREEN}║  The swallowed key is now in effect.                        ║${NC}"
-echo -e "${GREEN}║                                                             ║${NC}"
-echo -e "${GREEN}║  To uninstall: clawtower uninstall --key <admin-key>            ║${NC}"
-echo -e "${GREEN}║  Your admin key was displayed above — save it now!          ║${NC}"
-echo -e "${GREEN}║  ⚠️  SAVE YOUR ADMIN KEY — it's the only way to uninstall!  ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
+sep
+echo ""
+echo -e "  ${BOLD}Commands${NC}"
+echo -e "    ${DIM}clawtower status${NC}           Service status + alerts"
+echo -e "    ${DIM}clawtower scan${NC}             Quick security scan"
+echo -e "    ${DIM}clawtower uninstall${NC}        Uninstall ${DIM}(requires admin key)${NC}"
+echo ""
+sep
+echo ""
+echo -e "  ${RED}┃${NC} ${RED}${BOLD}Save your admin key${NC} — it was displayed above."
+echo -e "  ${RED}┃${NC} ${DIM}It is the only way to uninstall or manage ClawTower.${NC}"
+echo -e "  ${RED}┃${NC} ${DIM}Without it, your only option is recovery mode (boot from USB).${NC}"
 echo ""
 
 # ── 12. Build and install LD_PRELOAD guard ────────────────────────────────

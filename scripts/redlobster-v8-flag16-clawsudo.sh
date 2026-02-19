@@ -131,12 +131,14 @@ cs_check "tee /etc/shadow" "deny" "echo x | $CS tee /etc/shadow"
 cs_check "cp to /usr/local/bin/clawtower" "deny" "$CS cp /tmp/x /usr/local/bin/clawtower"
 
 echo ""
-echo "── Shell-level bypasses (known limitations, not scored) ──"
-echo "   These use shell metacharacters (|, ;, \$()) that the shell"
-echo "   processes BEFORE clawsudo sees the command. Defense is at"
-echo "   LD_PRELOAD/AppArmor/auditd layers, not clawsudo."
+echo "── Shell metacharacter tests ──"
+echo "   Pipes/semicolons/\$() are processed by the shell BEFORE clawsudo."
+echo "   Pipe-to-shell: detected by behavior layer (bare shell invocation)."
+echo "   Semicolons/\$(): benign commands, scored as known limitations."
 echo ""
-cs_check "cat | bash pipe" "known" "$CS cat /etc/hostname | bash"
+# Pipe-to-shell: clawsudo can't see it, but behavior detection catches
+# the bare `bash` invocation on the receiving end of the pipe.
+rl_run "cat | bash pipe (behavior detection)" "$CS cat /etc/hostname | bash"
 cs_check "cmd with semicolon" "known" "$CS cat /etc/hostname ; id"
 cs_check "cmd with \$()" "known" '$CS cat $(id)'
 cs_check "systemd-run" "deny" "$CS systemd-run bash"

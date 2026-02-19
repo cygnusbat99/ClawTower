@@ -10,8 +10,8 @@
 
 use anyhow::Result;
 use serde_json::Value;
-use std::path::Path;
-use tokio::sync::mpsc;
+use std::path::{Path, PathBuf};
+use tokio::sync::{mpsc, watch};
 
 use crate::alerts::{Alert, Severity};
 use crate::safe_tail::SafeTailer;
@@ -54,6 +54,43 @@ pub async fn tail_falco_log(
     }
 
     Ok(())
+}
+
+/// Tail the Falco log with live path switching via a watch channel.
+///
+/// When the path changes (e.g. user edits config in the TUI), the old SafeTailer
+/// is dropped and a new one is created for the updated path — no restart required.
+pub async fn tail_falco_log_dynamic(
+    tx: mpsc::Sender<Alert>,
+    mut path_rx: watch::Receiver<PathBuf>,
+) -> Result<()> {
+    loop {
+        let path = path_rx.borrow_and_update().clone();
+        let tailer = SafeTailer::new(&path);
+        let mut rx = tailer.tail_lines(tx.clone(), "falco").await;
+
+        loop {
+            tokio::select! {
+                line = rx.recv() => {
+                    match line {
+                        Some(line) => {
+                            if let Some(alert) = parse_falco_line(&line) {
+                                let _ = tx.send(alert).await;
+                            }
+                        }
+                        None => break, // tailer died, restart with current path
+                    }
+                }
+                _ = path_rx.changed() => {
+                    let _ = tx.send(Alert::new(
+                        Severity::Info, "falco",
+                        &format!("Log path changed to {}", path_rx.borrow().display()),
+                    )).await;
+                    break; // drop rx (stops old SafeTailer), loop restarts with new path
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

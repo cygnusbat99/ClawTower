@@ -221,8 +221,11 @@ pub struct ControlFinding {
 }
 
 /// Status of a compliance control finding.
+///
+/// Variants are ordered by escalation severity: `Pass < Finding < Critical`.
+/// This ordering is used by `ControlAccumulator` to track the worst status seen.
 #[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum FindingStatus {
     /// No alerts mapped to this control
     Pass,
@@ -253,75 +256,68 @@ pub struct ScannerSummary {
 }
 
 // ---------------------------------------------------------------------------
-// Well-known control names per framework
+// Well-known control names — unified lookup table
 // ---------------------------------------------------------------------------
 
-/// Human-readable control names for SOC 2 controls.
-#[allow(dead_code)]
-fn soc2_control_name(id: &str) -> &'static str {
-    match id {
-        "CC6.1" => "Logical and Physical Access Controls",
-        "CC6.3" => "Role-Based Access and Least Privilege",
-        "CC6.6" => "System Boundary Protection",
-        "CC6.8" => "Controls Against Unauthorized Software",
-        "CC7.2" => "Monitoring for Anomalies and Security Events",
-        "CC7.3" => "Evaluation of Security Events",
-        "CC8.1" => "Change Management Controls",
-        _ => "Unknown Control",
-    }
+/// Entry in the unified control name lookup table.
+struct ControlNameEntry {
+    framework: &'static str,
+    id: &'static str,
+    name: &'static str,
 }
 
-/// Human-readable control names for NIST 800-53 controls.
-#[allow(dead_code)]
-fn nist_control_name(id: &str) -> &'static str {
-    match id {
-        "AC-3" => "Access Enforcement",
-        "AC-6" => "Least Privilege",
-        "AC-25" => "Reference Monitor",
-        "AU-9" => "Protection of Audit Information",
-        "AU-10" => "Non-repudiation",
-        "AU-12" => "Audit Record Generation",
-        "CM-7" => "Least Functionality",
-        "SC-7" => "Boundary Protection",
-        "SI-3" => "Malicious Code Protection",
-        "SI-4" => "System Monitoring",
-        "SI-7" => "Software, Firmware, and Information Integrity",
-        _ => "Unknown Control",
-    }
-}
+/// Unified lookup table for all framework control names.
+/// Consolidates SOC 2, NIST 800-53, and CIS v8 control names into one table.
+static CONTROL_NAMES: &[ControlNameEntry] = &[
+    // SOC 2 Trust Services Criteria
+    ControlNameEntry { framework: "soc2", id: "CC6.1", name: "Logical and Physical Access Controls" },
+    ControlNameEntry { framework: "soc2", id: "CC6.3", name: "Role-Based Access and Least Privilege" },
+    ControlNameEntry { framework: "soc2", id: "CC6.6", name: "System Boundary Protection" },
+    ControlNameEntry { framework: "soc2", id: "CC6.8", name: "Controls Against Unauthorized Software" },
+    ControlNameEntry { framework: "soc2", id: "CC7.2", name: "Monitoring for Anomalies and Security Events" },
+    ControlNameEntry { framework: "soc2", id: "CC7.3", name: "Evaluation of Security Events" },
+    ControlNameEntry { framework: "soc2", id: "CC8.1", name: "Change Management Controls" },
+    // NIST 800-53 Rev 5
+    ControlNameEntry { framework: "nist-800-53", id: "AC-3", name: "Access Enforcement" },
+    ControlNameEntry { framework: "nist-800-53", id: "AC-6", name: "Least Privilege" },
+    ControlNameEntry { framework: "nist-800-53", id: "AC-25", name: "Reference Monitor" },
+    ControlNameEntry { framework: "nist-800-53", id: "AU-9", name: "Protection of Audit Information" },
+    ControlNameEntry { framework: "nist-800-53", id: "AU-10", name: "Non-repudiation" },
+    ControlNameEntry { framework: "nist-800-53", id: "AU-12", name: "Audit Record Generation" },
+    ControlNameEntry { framework: "nist-800-53", id: "CM-7", name: "Least Functionality" },
+    ControlNameEntry { framework: "nist-800-53", id: "SC-7", name: "Boundary Protection" },
+    ControlNameEntry { framework: "nist-800-53", id: "SI-3", name: "Malicious Code Protection" },
+    ControlNameEntry { framework: "nist-800-53", id: "SI-4", name: "System Monitoring" },
+    ControlNameEntry { framework: "nist-800-53", id: "SI-7", name: "Software, Firmware, and Information Integrity" },
+    // CIS Controls v8
+    ControlNameEntry { framework: "cis-v8", id: "2.7", name: "Allowlist Authorized Scripts" },
+    ControlNameEntry { framework: "cis-v8", id: "3.14", name: "Log Sensitive Data Access" },
+    ControlNameEntry { framework: "cis-v8", id: "4.8", name: "Uninstall or Disable Unnecessary Services" },
+    ControlNameEntry { framework: "cis-v8", id: "5.4", name: "Restrict Administrator Privileges" },
+    ControlNameEntry { framework: "cis-v8", id: "6.1", name: "Establish an Access Granting Process" },
+    ControlNameEntry { framework: "cis-v8", id: "8.11", name: "Conduct Audit Log Reviews" },
+    ControlNameEntry { framework: "cis-v8", id: "13.1", name: "Centralize Security Event Alerting" },
+    ControlNameEntry { framework: "cis-v8", id: "13.3", name: "Deploy a Network Intrusion Detection Solution" },
+    ControlNameEntry { framework: "cis-v8", id: "16.1", name: "Establish a Secure Application Development Process" },
+];
 
-/// Human-readable control names for CIS Controls v8.
-#[allow(dead_code)]
-fn cis_control_name(id: &str) -> &'static str {
-    match id {
-        "2.7" => "Allowlist Authorized Scripts",
-        "3.14" => "Log Sensitive Data Access",
-        "4.8" => "Uninstall or Disable Unnecessary Services",
-        "5.4" => "Restrict Administrator Privileges",
-        "6.1" => "Establish an Access Granting Process",
-        "8.11" => "Conduct Audit Log Reviews",
-        "13.1" => "Centralize Security Event Alerting",
-        "13.3" => "Deploy a Network Intrusion Detection Solution",
-        "16.1" => "Establish a Secure Application Development Process",
-        _ => "Unknown Control",
-    }
-}
-
-/// Return the control name lookup function for a given framework.
-#[allow(dead_code)]
-fn mitre_technique_name(id: &str) -> &'static str {
-    lookup_mitre_technique(id).map(|t| t.technique_name).unwrap_or("Unknown Technique")
-}
-
+/// Look up the human-readable name for a control ID within a framework.
+///
+/// For `mitre-attack`, delegates to the MITRE technique table. For all other
+/// frameworks, searches the unified `CONTROL_NAMES` table.
 fn control_name_for_framework(framework: &str, id: &str) -> String {
-    let name = match framework {
-        "soc2" => soc2_control_name(id),
-        "nist-800-53" => nist_control_name(id),
-        "cis-v8" => cis_control_name(id),
-        "mitre-attack" => mitre_technique_name(id),
-        _ => "Unknown Control",
-    };
-    name.to_string()
+    if framework == "mitre-attack" {
+        return lookup_mitre_technique(id)
+            .map(|t| t.technique_name)
+            .unwrap_or("Unknown Technique")
+            .to_string();
+    }
+    CONTROL_NAMES
+        .iter()
+        .find(|e| e.framework == framework && e.id == id)
+        .map(|e| e.name)
+        .unwrap_or("Unknown Control")
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +338,68 @@ pub fn lookup_controls(category: &str) -> Option<&'static ControlMapping> {
 #[allow(dead_code)]
 pub fn supported_frameworks() -> &'static [&'static str] {
     &["soc2", "nist-800-53", "cis-v8", "mitre-attack"]
+}
+
+/// Extract the control IDs relevant to a given framework from a mapping.
+///
+/// Defaults to SOC 2 controls for unrecognized framework identifiers.
+fn get_control_ids_for_framework<'a>(
+    mapping: &'a ControlMapping,
+    framework: &str,
+) -> &'a [&'static str] {
+    match framework {
+        "soc2" => mapping.soc2_controls,
+        "nist-800-53" => mapping.nist_controls,
+        "cis-v8" => mapping.cis_controls,
+        "mitre-attack" => mapping.mitre_attack,
+        _ => mapping.soc2_controls,
+    }
+}
+
+/// Map an alert severity string to a `FindingStatus`.
+///
+/// Critical/crit -> `Critical`, warning/warn -> `Finding`, everything else -> `Pass`.
+fn severity_to_finding_status(severity: &str) -> FindingStatus {
+    match severity.to_lowercase().as_str() {
+        "critical" | "crit" => FindingStatus::Critical,
+        "warning" | "warn" => FindingStatus::Finding,
+        _ => FindingStatus::Pass,
+    }
+}
+
+/// Accumulated state for a single control while building the report.
+struct ControlAccumulator {
+    alert_count: u64,
+    highest_severity: String,
+    status: FindingStatus,
+    categories: Vec<String>,
+}
+
+impl ControlAccumulator {
+    fn new() -> Self {
+        Self {
+            alert_count: 0,
+            highest_severity: "none".to_string(),
+            status: FindingStatus::Pass,
+            categories: Vec::new(),
+        }
+    }
+
+    /// Record alerts against this control, escalating status if the new
+    /// severity outranks the current one (Pass < Finding < Critical).
+    fn record(&mut self, count: u64, severity: &str, source: &str) {
+        self.alert_count += count;
+
+        let new_status = severity_to_finding_status(severity);
+        if new_status > self.status {
+            self.highest_severity = severity.to_string();
+            self.status = new_status;
+        }
+
+        if !self.categories.contains(&source.to_string()) {
+            self.categories.push(source.to_string());
+        }
+    }
 }
 
 /// Generate a compliance report from alert data.
@@ -365,10 +423,10 @@ pub fn generate_report(
     let mut info_count: u64 = 0;
 
     for (_, severity, count) in alert_summary {
-        match severity.to_lowercase().as_str() {
-            "critical" | "crit" => critical_count += count,
-            "warning" | "warn" => warning_count += count,
-            _ => info_count += count,
+        match severity_to_finding_status(severity) {
+            FindingStatus::Critical => critical_count += count,
+            FindingStatus::Finding => warning_count += count,
+            FindingStatus::Pass => info_count += count,
         }
     }
 
@@ -376,71 +434,26 @@ pub fn generate_report(
 
     // Collect all unique control IDs for the requested framework, tracking
     // which ClawTower categories map to each control and the highest severity seen.
-    let mut control_map: std::collections::BTreeMap<
-        String,
-        (u64, String, FindingStatus, Vec<String>),
-    > = std::collections::BTreeMap::new();
+    let mut control_map: std::collections::BTreeMap<String, ControlAccumulator> =
+        std::collections::BTreeMap::new();
 
     // Seed all controls from the static mapping so every known control appears
     for mapping in CONTROL_MAPPINGS {
-        let control_ids: &[&str] = match framework {
-            "soc2" => mapping.soc2_controls,
-            "nist-800-53" => mapping.nist_controls,
-            "cis-v8" => mapping.cis_controls,
-            "mitre-attack" => mapping.mitre_attack,
-            _ => mapping.soc2_controls, // default to soc2
-        };
-        for &cid in control_ids {
+        for &cid in get_control_ids_for_framework(mapping, framework) {
             control_map
                 .entry(cid.to_string())
-                .or_insert_with(|| (0, "none".to_string(), FindingStatus::Pass, Vec::new()));
+                .or_insert_with(ControlAccumulator::new);
         }
     }
 
     // Map alert data to controls
     for (source, severity, count) in alert_summary {
         if let Some(mapping) = lookup_controls(source) {
-            let control_ids: &[&str] = match framework {
-                "soc2" => mapping.soc2_controls,
-                "nist-800-53" => mapping.nist_controls,
-                "cis-v8" => mapping.cis_controls,
-                "mitre-attack" => mapping.mitre_attack,
-                _ => mapping.soc2_controls,
-            };
-
-            let sev_status = match severity.to_lowercase().as_str() {
-                "critical" | "crit" => FindingStatus::Critical,
-                "warning" | "warn" => FindingStatus::Finding,
-                _ => FindingStatus::Pass,
-            };
-
-            for &cid in control_ids {
-                let entry = control_map
+            for &cid in get_control_ids_for_framework(mapping, framework) {
+                control_map
                     .entry(cid.to_string())
-                    .or_insert_with(|| (0, "none".to_string(), FindingStatus::Pass, Vec::new()));
-
-                entry.0 += count;
-
-                // Escalate status: Pass < Finding < Critical
-                match (&entry.2, &sev_status) {
-                    (FindingStatus::Pass, FindingStatus::Finding) => {
-                        entry.1 = severity.clone();
-                        entry.2 = FindingStatus::Finding;
-                    }
-                    (FindingStatus::Pass, FindingStatus::Critical) => {
-                        entry.1 = severity.clone();
-                        entry.2 = FindingStatus::Critical;
-                    }
-                    (FindingStatus::Finding, FindingStatus::Critical) => {
-                        entry.1 = severity.clone();
-                        entry.2 = FindingStatus::Critical;
-                    }
-                    _ => {}
-                }
-
-                if !entry.3.contains(source) {
-                    entry.3.push(source.clone());
-                }
+                    .or_insert_with(ControlAccumulator::new)
+                    .record(*count, severity, source);
             }
         }
     }
@@ -448,19 +461,19 @@ pub fn generate_report(
     // Build control findings
     let control_findings: Vec<ControlFinding> = control_map
         .into_iter()
-        .map(|(cid, (alert_count, highest_severity, status, categories))| {
+        .map(|(cid, acc)| {
             let control_name = control_name_for_framework(framework, &cid);
             ControlFinding {
                 control_id: cid,
                 control_name,
-                alert_count,
-                highest_severity: if status == FindingStatus::Pass {
+                alert_count: acc.alert_count,
+                highest_severity: if acc.status == FindingStatus::Pass {
                     "none".to_string()
                 } else {
-                    highest_severity
+                    acc.highest_severity
                 },
-                status,
-                categories,
+                status: acc.status,
+                categories: acc.categories,
             }
         })
         .collect();

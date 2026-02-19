@@ -126,14 +126,19 @@ check_denied "clawsudo find -exec" \
 check_denied "clawsudo apt-get -o APT hook" \
   "$CS apt-get update -o APT::Update::Pre-Invoke::=id"
 
-check_denied "clawsudo cat | bash pipe" \
-  "$CS cat /etc/hostname | bash"
+# Shell metacharacter tests: pipe/semicolon/$() are processed by the shell
+# BEFORE clawsudo, so clawsudo cannot deny them. Defense is at behavior layer.
+# Pipe-to-shell: verified via alert log (bare shell invocation detection).
+rl_run "cat | bash pipe (behavior layer)" "$CS cat /etc/hostname | bash"
 
-check_denied "clawsudo sed with semicolon" \
+# sed ';id' — semicolon is inside sed expression, not shell metachar.
+# clawsudo sees the full string — test with check_denied.
+check_denied "clawsudo sed with semicolon in expression" \
   "$CS sed 's/x/y/;id' /etc/hostname"
 
-check_denied 'clawsudo with $() substitution' \
-  '$CS cat $(id)'
+# $() substitution: shell processes first, clawsudo sees `cat <id_output>`.
+# Cannot be tested at clawsudo layer — defense is auditd logging.
+# Removed from deny scoring (was always a false failure).
 
 rl_summary
 rl_cleanup

@@ -125,8 +125,8 @@ impl Default for AutoUpdateConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            interval: 300,
-            mode: "auto".to_string(),
+            interval: default_auto_update_interval(),
+            mode: default_auto_update_mode(),
         }
     }
 }
@@ -225,42 +225,8 @@ pub struct AuditdConfig {
     pub enabled: bool,
 }
 
-/// Network (iptables/netfilter) log monitoring configuration.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct NetworkConfig {
-    pub log_path: String,
-    pub log_prefix: String,
-    pub enabled: bool,
-    #[serde(default = "default_network_source")]
-    pub source: String,
-    /// CIDR ranges to never alert on
-    #[serde(default = "default_allowlisted_cidrs")]
-    pub allowlisted_cidrs: Vec<String>,
-    /// Extra ports to never alert on
-    #[serde(default = "default_allowlisted_ports")]
-    pub allowlisted_ports: Vec<u16>,
-}
-
-fn default_network_source() -> String {
-    "auto".to_string()
-}
-
-/// Default CIDR ranges that are never alerted on (RFC1918, multicast, loopback).
-pub fn default_allowlisted_cidrs() -> Vec<String> {
-    vec![
-        "192.168.0.0/16".to_string(),
-        "10.0.0.0/8".to_string(),
-        "172.16.0.0/12".to_string(),
-        "169.254.0.0/16".to_string(),
-        "127.0.0.0/8".to_string(),
-        "224.0.0.0/4".to_string(),
-    ]
-}
-
-/// Default ports that are never alerted on (HTTPS, DNS, NTP, mDNS).
-pub fn default_allowlisted_ports() -> Vec<u16> {
-    vec![443, 53, 123, 5353]
-}
+// Network config types moved to network.rs — re-exported for backward compatibility
+pub use crate::network::{NetworkConfig, default_allowlisted_cidrs, default_allowlisted_ports};
 
 /// Falco eBPF integration configuration.
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -350,63 +316,8 @@ impl ApiConfig {
     }
 }
 
-/// API key vault proxy configuration.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct ProxyConfig {
-    pub enabled: bool,
-    pub bind: String,
-    pub port: u16,
-    #[serde(default)]
-    pub key_mapping: Vec<KeyMapping>,
-    #[serde(default)]
-    pub dlp: DlpConfig,
-}
-
-impl Default for ProxyConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            bind: "127.0.0.1".to_string(),
-            port: 18790,
-            key_mapping: Vec::new(),
-            dlp: DlpConfig::default(),
-        }
-    }
-}
-
-/// Maps a virtual API key to a real key for a specific provider/upstream.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct KeyMapping {
-    #[serde(alias = "virtual")]
-    pub virtual_key: String,
-    pub real: String,
-    pub provider: String,
-    pub upstream: String,
-    /// Time-to-live in seconds. None = never expires.
-    #[serde(default)]
-    pub ttl_secs: Option<u64>,
-    /// Maximum allowed API paths (e.g., ["/v1/messages"]). Empty = all paths allowed.
-    #[serde(default)]
-    pub allowed_paths: Vec<String>,
-    /// Risk score threshold — auto-revoke if agent's risk exceeds this. 0 = disabled.
-    #[serde(default)]
-    pub revoke_at_risk: f64,
-}
-
-/// Data Loss Prevention pattern configuration for the proxy.
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
-pub struct DlpConfig {
-    #[serde(default)]
-    pub patterns: Vec<DlpPattern>,
-}
-
-/// A single DLP regex pattern with a name and action (block or redact).
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct DlpPattern {
-    pub name: String,
-    pub regex: String,
-    pub action: String,
-}
+// Proxy config types moved to proxy.rs — re-exported for backward compatibility
+pub use crate::proxy::{ProxyConfig, KeyMapping, DlpConfig, DlpPattern};
 
 /// Prompt firewall configuration — intercepts malicious prompts before they reach LLM providers.
 ///
@@ -468,596 +379,54 @@ impl Default for NetPolicyConfig {
             allowed_hosts: Vec::new(),
             allowed_ports: vec![80, 443, 53],
             blocked_hosts: Vec::new(),
-            mode: "blocklist".to_string(),
+            mode: default_netpolicy_mode(),
         }
     }
 }
 
-/// Configuration for the response engine — automated threat containment with human approval.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ResponseConfig {
-    /// Enable the response engine.
-    #[serde(default)]
-    pub enabled: bool,
+// Response + IncidentMode config types moved to response.rs — re-exported for backward compatibility
+pub use crate::response::{ResponseConfig, IncidentModeConfig};
 
-    /// Default timeout for human approval in seconds (default: 120 = 2 minutes).
-    #[serde(default = "default_response_timeout")]
-    pub timeout_secs: u64,
+// Cloud config types moved to cloud.rs — re-exported for backward compatibility
+pub use crate::cloud::CloudConfig;
 
-    /// What to do with Warning-level alerts. Options: "gate", "alert_only", "auto_deny".
-    /// Critical alerts always use "gate" regardless of this setting.
-    #[serde(default = "default_warning_mode")]
-    pub warning_mode: String,
+// Export config types moved to export.rs — re-exported for backward compatibility
+pub use crate::export::{ExportConfig, SyslogExportConfig, WebhookExportConfig, FileExportConfig};
 
-    /// Directory containing response playbook YAML files.
-    #[serde(default = "default_playbook_dir")]
-    pub playbook_dir: String,
+// Sentinel config types moved to sentinel.rs — re-exported for backward compatibility
+pub use crate::sentinel::{SentinelConfig, WatchPathConfig, WatchPolicy};
 
-    /// Message returned to agent when an action is denied.
-    #[serde(default = "default_deny_message")]
-    pub deny_message: String,
-}
+// OpenClaw config types moved to openclaw_config.rs — re-exported for backward compatibility
+pub use crate::openclaw_config::OpenClawConfig;
 
-fn default_response_timeout() -> u64 { 120 }
-fn default_warning_mode() -> String { "gate".to_string() }
-fn default_playbook_dir() -> String { "/etc/clawtower/playbooks".to_string() }
-fn default_deny_message() -> String {
-    "Action blocked by ClawTower security policy. Contact administrator.".to_string()
-}
-
-impl Default for ResponseConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            timeout_secs: default_response_timeout(),
-            warning_mode: default_warning_mode(),
-            playbook_dir: default_playbook_dir(),
-            deny_message: default_deny_message(),
-        }
+/// Apply all `.toml` overlays from a config.d/ directory to a base TOML value.
+/// Files are loaded in alphabetical order. No-op if the directory doesn't exist.
+fn apply_config_d_overlays(base: &mut toml::Value, config_d: &Path) -> Result<()> {
+    if !config_d.exists() || !config_d.is_dir() {
+        return Ok(());
     }
-}
 
-/// Incident mode configuration - deterministic containment on toggle.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct IncidentModeConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default = "default_incident_dedup")]
-    pub dedup_window_secs: u64,
-    #[serde(default = "default_incident_scan_dedup")]
-    pub scan_dedup_window_secs: u64,
-    #[serde(default = "default_incident_rate_limit")]
-    pub rate_limit_per_source: u32,
-    #[serde(default)]
-    pub lock_clawsudo: bool,
-}
+    let mut entries: Vec<_> = std::fs::read_dir(config_d)
+        .with_context(|| format!("Failed to read config.d: {}", config_d.display()))?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path().extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext == "toml")
+                .unwrap_or(false)
+        })
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
 
-fn default_incident_dedup() -> u64 { 2 }
-fn default_incident_scan_dedup() -> u64 { 60 }
-fn default_incident_rate_limit() -> u32 { 200 }
-
-impl Default for IncidentModeConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            dedup_window_secs: 2,
-            scan_dedup_window_secs: 60,
-            rate_limit_per_source: 200,
-            lock_clawsudo: false,
-        }
+    for entry in entries {
+        let overlay_content = std::fs::read_to_string(entry.path())
+            .with_context(|| format!("Failed to read overlay: {}", entry.path().display()))?;
+        let overlay: toml::Value = toml::from_str(&overlay_content)
+            .with_context(|| format!("Failed to parse overlay: {}", entry.path().display()))?;
+        merge_toml(base, overlay);
     }
-}
 
-/// Cloud management plane uplink configuration.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct CloudConfig {
-    /// Enable cloud uplink
-    #[serde(default)]
-    pub enabled: bool,
-    /// Cloud management plane endpoint URL
-    #[serde(default = "default_cloud_endpoint")]
-    pub endpoint: String,
-    /// Path to agent Ed25519 private key for authentication
-    #[serde(default = "default_agent_key_path")]
-    pub agent_key_path: String,
-    /// Agent registration ID (auto-generated on first connect)
-    #[serde(default)]
-    pub agent_id: String,
-    /// Telemetry push interval in seconds
-    #[serde(default = "default_telemetry_interval")]
-    pub telemetry_interval: u64,
-    /// Whether to push alerts to cloud
-    #[serde(default = "default_true")]
-    pub push_alerts: bool,
-    /// Whether to pull policy updates from cloud
-    #[serde(default)]
-    pub pull_policies: bool,
-    /// Batch size for alert uploads
-    #[serde(default = "default_cloud_batch")]
-    pub batch_size: usize,
-}
-
-fn default_cloud_endpoint() -> String { "https://api.clawtower.io".to_string() }
-fn default_agent_key_path() -> String { "/etc/clawtower/agent-key.pem".to_string() }
-fn default_telemetry_interval() -> u64 { 60 }
-fn default_cloud_batch() -> usize { 50 }
-
-impl Default for CloudConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            endpoint: default_cloud_endpoint(),
-            agent_key_path: default_agent_key_path(),
-            agent_id: String::new(),
-            telemetry_interval: 60,
-            push_alerts: true,
-            pull_policies: false,
-            batch_size: 50,
-        }
-    }
-}
-
-/// SIEM export pipeline configuration.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ExportConfig {
-    /// Enable the export pipeline.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Syslog export sub-config.
-    #[serde(default)]
-    pub syslog: SyslogExportConfig,
-    /// Webhook export sub-config.
-    #[serde(default)]
-    pub webhook: WebhookExportConfig,
-    /// File export sub-config (for Splunk forwarder / Fluentd).
-    #[serde(default)]
-    pub file: FileExportConfig,
-}
-
-impl Default for ExportConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            syslog: SyslogExportConfig::default(),
-            webhook: WebhookExportConfig::default(),
-            file: FileExportConfig::default(),
-        }
-    }
-}
-
-/// Syslog (CEF / RFC 5424) export configuration.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SyslogExportConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    /// Target address (e.g., "udp://siem.corp:514", "tcp://siem.corp:6514")
-    #[serde(default = "default_syslog_target")]
-    pub target: String,
-    /// Format: "cef" (Common Event Format) or "rfc5424"
-    #[serde(default = "default_syslog_format")]
-    pub format: String,
-    /// Minimum severity for syslog export
-    #[serde(default = "default_syslog_min_level")]
-    pub min_level: String,
-}
-
-fn default_syslog_target() -> String { "udp://127.0.0.1:514".to_string() }
-fn default_syslog_format() -> String { "cef".to_string() }
-fn default_syslog_min_level() -> String { "warning".to_string() }
-
-impl Default for SyslogExportConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            target: default_syslog_target(),
-            format: default_syslog_format(),
-            min_level: default_syslog_min_level(),
-        }
-    }
-}
-
-/// Webhook (JSON POST) export configuration.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct WebhookExportConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    /// Webhook URL to POST alerts to
-    #[serde(default)]
-    pub url: String,
-    /// Authorization header value (e.g., "Bearer <token>")
-    #[serde(default)]
-    pub auth_header: String,
-    /// Number of alerts to batch before flushing
-    #[serde(default = "default_webhook_batch")]
-    pub batch_size: usize,
-    /// Maximum seconds between flushes
-    #[serde(default = "default_webhook_flush")]
-    pub flush_interval_secs: u64,
-}
-
-fn default_webhook_batch() -> usize { 10 }
-fn default_webhook_flush() -> u64 { 5 }
-
-impl Default for WebhookExportConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            url: String::new(),
-            auth_header: String::new(),
-            batch_size: default_webhook_batch(),
-            flush_interval_secs: default_webhook_flush(),
-        }
-    }
-}
-
-/// File export configuration (rotated JSON lines for Splunk forwarder / Fluentd).
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct FileExportConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    /// Output file path
-    #[serde(default = "default_file_export_path")]
-    pub path: String,
-    /// Maximum file size in bytes before rotation
-    #[serde(default = "default_file_max_size")]
-    pub max_size_bytes: u64,
-    /// Number of rotated files to keep
-    #[serde(default = "default_file_keep")]
-    pub keep_rotated: u32,
-}
-
-fn default_file_export_path() -> String { "/var/log/clawtower/export.jsonl".to_string() }
-fn default_file_max_size() -> u64 { 50 * 1024 * 1024 } // 50 MB
-fn default_file_keep() -> u32 { 5 }
-
-impl Default for FileExportConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            path: default_file_export_path(),
-            max_size_bytes: default_file_max_size(),
-            keep_rotated: default_file_keep(),
-        }
-    }
-}
-
-/// Real-time file sentinel configuration.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct SentinelConfig {
-    #[serde(default = "default_sentinel_enabled")]
-    pub enabled: bool,
-    #[serde(default = "default_watch_paths")]
-    pub watch_paths: Vec<WatchPathConfig>,
-    #[serde(default = "default_quarantine_dir")]
-    pub quarantine_dir: String,
-    #[serde(default = "default_shadow_dir")]
-    pub shadow_dir: String,
-    #[serde(default = "default_debounce_ms")]
-    pub debounce_ms: u64,
-    #[serde(default = "default_scan_content")]
-    pub scan_content: bool,
-    #[serde(default = "default_max_file_size_kb")]
-    pub max_file_size_kb: u64,
-    /// Glob patterns for paths excluded from content scanning (e.g. credential
-    /// stores that legitimately contain API keys). Matched using `glob::Pattern`.
-    #[serde(default = "default_content_scan_excludes")]
-    pub content_scan_excludes: Vec<String>,
-    /// Substring patterns for paths excluded from content scanning.
-    /// If a file's path contains any of these strings, Barnacle content
-    /// scanning is skipped (change detection still applies).
-    #[serde(default = "default_exclude_content_scan")]
-    pub exclude_content_scan: Vec<String>,
-    /// Glob patterns for paths that trigger skill intake scanning.
-    /// Files matching these patterns are run through the skill intake
-    /// scanner (social engineering + Barnacle checks) regardless of
-    /// content_scan_excludes. Blocked skills are quarantined.
-    #[serde(default = "default_skill_intake_paths")]
-    pub skill_intake_paths: Vec<String>,
-}
-
-/// A single path to watch with its glob patterns and policy.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct WatchPathConfig {
-    pub path: String,
-    pub patterns: Vec<String>,
-    pub policy: WatchPolicy,
-}
-
-/// Policy for a watched path: Protected files are quarantined+restored on change;
-/// Watched files are allowed to change with shadow updates.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum WatchPolicy {
-    Protected,
-    Watched,
-}
-
-fn default_sentinel_enabled() -> bool { true }
-fn default_quarantine_dir() -> String { "/etc/clawtower/quarantine".to_string() }
-fn default_shadow_dir() -> String { "/etc/clawtower/sentinel-shadow".to_string() }
-fn default_debounce_ms() -> u64 { 200 }
-fn default_scan_content() -> bool { true }
-fn default_max_file_size_kb() -> u64 { 1024 }
-fn default_skill_intake_paths() -> Vec<String> {
-    vec![
-        "**/skills/*/SKILL.md".to_string(),
-        "**/skills/*/README.md".to_string(),
-        "**/skills/*/package.json".to_string(),
-    ]
-}
-
-/// Default paths excluded from content scanning. These are files that
-/// legitimately contain API keys or credentials and should not be flagged
-/// by Barnacle pattern matching.
-fn default_content_scan_excludes() -> Vec<String> {
-    vec![
-        "**/.openclaw/**/auth-profiles.json".to_string(),
-        "**/.openclaw/credentials/**".to_string(),
-        "**/.openclaw/*.json".to_string(),
-        "**/superpowers/skills/**".to_string(),
-        "**/skills/*/SKILL.md".to_string(),
-        "**/.openclaw/workspace/*.md".to_string(),
-    ]
-}
-
-/// Default paths excluded from content scanning via simple substring matching.
-/// This is a secondary exclusion mechanism — files whose path contains any of
-/// these substrings will skip Barnacle content scanning even if they are
-/// Protected policy.
-fn default_exclude_content_scan() -> Vec<String> {
-    vec![
-        "superpowers/skills".to_string(),
-    ]
-}
-
-/// Default sentinel watch paths. Extracted as a named function so that
-/// `#[serde(default = "default_watch_paths")]` returns the full list when
-/// a config overlay (e.g. `[sentinel] enabled = true`) triggers partial
-/// deserialization — otherwise `#[serde(default)]` would produce an empty vec.
-fn default_watch_paths() -> Vec<WatchPathConfig> {
-    vec![
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/workspace/SOUL.md".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Protected,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/workspace/AGENTS.md".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Protected,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/workspace/MEMORY.md".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Protected,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/workspace/IDENTITY.md".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Protected,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/workspace/USER.md".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Protected,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/workspace/HEARTBEAT.md".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/workspace/TOOLS.md".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/workspace/superpowers/skills".to_string(),
-            patterns: vec!["SKILL.md".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        // OpenClaw credential and config monitoring — all JSON in config root
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw".to_string(),
-            patterns: vec!["*.json".to_string()],
-            policy: WatchPolicy::Protected,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/credentials".to_string(),
-            patterns: vec!["*.json".to_string()],
-            policy: WatchPolicy::Protected,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/agents/main/agent/auth-profiles.json".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        // Session metadata monitoring
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/agents/main/sessions/sessions.json".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        // WhatsApp credential theft detection
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/credentials/whatsapp".to_string(),
-            patterns: vec!["creds.json".to_string()],
-            policy: WatchPolicy::Protected,
-        },
-        // Pairing allowlist changes
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/credentials".to_string(),
-            patterns: vec!["*-allowFrom.json".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        // Persistence-critical shell/profile files
-        WatchPathConfig {
-            path: "/home/openclaw/.bashrc".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.profile".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.bash_login".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.bash_logout".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.npmrc".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.ssh/rc".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.ssh/environment".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        // Persistence directory watches (systemd user units, autostart, git hooks)
-        WatchPathConfig {
-            path: "/home/openclaw/.config/systemd/user".to_string(),
-            patterns: vec!["*.service".to_string(), "*.timer".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.config/autostart".to_string(),
-            patterns: vec!["*.desktop".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/workspace/.git/hooks".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        // System-level persistence paths (cron, at)
-        WatchPathConfig {
-            path: "/var/spool/cron/crontabs".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        WatchPathConfig {
-            path: "/var/spool/at".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        // Python sitecustomize.py persistence
-        WatchPathConfig {
-            path: "/usr/lib/python3/dist-packages".to_string(),
-            patterns: vec!["sitecustomize.py".to_string(), "usercustomize.py".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        WatchPathConfig {
-            path: "/usr/local/lib/python3.11/dist-packages".to_string(),
-            patterns: vec!["sitecustomize.py".to_string(), "usercustomize.py".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        // npm package-lock persistence indicator
-        WatchPathConfig {
-            path: "/home/openclaw/.node_modules".to_string(),
-            patterns: vec![".package-lock.json".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        // MCP config integrity (Tinman MCP-* coverage)
-        WatchPathConfig {
-            path: "/home/openclaw/.mcp".to_string(),
-            patterns: vec!["*.json".to_string(), "*.yaml".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/mcp-servers".to_string(),
-            patterns: vec!["*".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        // Download directory monitoring for indirect injection (Tinman II-*)
-        WatchPathConfig {
-            path: "/home/openclaw/Downloads".to_string(),
-            patterns: vec!["*.md".to_string(), "*.txt".to_string(), "*.json".to_string(), "*.html".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-        // Memory file poisoning detection (Tinman MP-*)
-        WatchPathConfig {
-            path: "/home/openclaw/.openclaw/workspace/memory".to_string(),
-            patterns: vec!["*.md".to_string()],
-            policy: WatchPolicy::Watched,
-        },
-    ]
-}
-
-impl Default for SentinelConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            watch_paths: default_watch_paths(),
-            quarantine_dir: default_quarantine_dir(),
-            shadow_dir: default_shadow_dir(),
-            debounce_ms: default_debounce_ms(),
-            scan_content: default_scan_content(),
-            max_file_size_kb: default_max_file_size_kb(),
-            content_scan_excludes: default_content_scan_excludes(),
-            exclude_content_scan: default_exclude_content_scan(),
-            skill_intake_paths: default_skill_intake_paths(),
-        }
-    }
-}
-
-/// OpenClaw-specific security monitoring configuration.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct OpenClawConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default = "default_openclaw_config_path")]
-    pub config_path: String,
-    #[serde(default = "default_openclaw_state_dir")]
-    pub state_dir: String,
-    #[serde(default = "default_openclaw_audit_cmd")]
-    pub audit_command: String,
-    #[serde(default = "default_true")]
-    pub audit_on_scan: bool,
-    #[serde(default = "default_true")]
-    pub config_drift_check: bool,
-    #[serde(default = "default_openclaw_baseline_path")]
-    pub baseline_path: String,
-    #[serde(default)]
-    pub mdns_check: bool,
-    #[serde(default)]
-    pub plugin_watch: bool,
-    #[serde(default)]
-    pub session_log_audit: bool,
-}
-
-fn default_openclaw_config_path() -> String { "/home/openclaw/.openclaw/openclaw.json".to_string() }
-fn default_openclaw_state_dir() -> String { "/home/openclaw/.openclaw".to_string() }
-fn default_openclaw_audit_cmd() -> String { "openclaw security audit --deep".to_string() }
-fn default_openclaw_baseline_path() -> String { "/etc/clawtower/openclaw-config-baseline.json".to_string() }
-
-impl Default for OpenClawConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            config_path: default_openclaw_config_path(),
-            state_dir: default_openclaw_state_dir(),
-            audit_command: default_openclaw_audit_cmd(),
-            audit_on_scan: true,
-            config_drift_check: true,
-            baseline_path: default_openclaw_baseline_path(),
-            mdns_check: false,
-            plugin_watch: false,
-            session_log_audit: false,
-        }
-    }
+    Ok(())
 }
 
 impl Config {
@@ -1077,27 +446,7 @@ impl Config {
         let mut base: toml::Value = toml::from_str(&content)
             .with_context(|| "Failed to parse base config")?;
 
-        if config_d.exists() && config_d.is_dir() {
-            let mut entries: Vec<_> = std::fs::read_dir(config_d)
-                .with_context(|| format!("Failed to read config.d: {}", config_d.display()))?
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path().extension()
-                        .and_then(|ext| ext.to_str())
-                        .map(|ext| ext == "toml")
-                        .unwrap_or(false)
-                })
-                .collect();
-            entries.sort_by_key(|e| e.file_name());
-
-            for entry in entries {
-                let overlay_content = std::fs::read_to_string(entry.path())
-                    .with_context(|| format!("Failed to read overlay: {}", entry.path().display()))?;
-                let overlay: toml::Value = toml::from_str(&overlay_content)
-                    .with_context(|| format!("Failed to parse overlay: {}", entry.path().display()))?;
-                merge_toml(&mut base, overlay);
-            }
-        }
+        apply_config_d_overlays(&mut base, config_d)?;
 
         let config: Config = base.try_into()
             .with_context(|| "Failed to deserialize merged config")?;
@@ -1127,32 +476,24 @@ impl Config {
             }
         }
 
-        // Apply config.d/ overlays (highest priority — user overrides)
-        if config_d.exists() && config_d.is_dir() {
-            let mut entries: Vec<_> = std::fs::read_dir(config_d)
-                .with_context(|| format!("Failed to read config.d: {}", config_d.display()))?
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path().extension()
-                        .and_then(|ext| ext.to_str())
-                        .map(|ext| ext == "toml")
-                        .unwrap_or(false)
-                })
-                .collect();
-            entries.sort_by_key(|e| e.file_name());
-
-            for entry in entries {
-                let overlay_content = std::fs::read_to_string(entry.path())
-                    .with_context(|| format!("Failed to read overlay: {}", entry.path().display()))?;
-                let overlay: toml::Value = toml::from_str(&overlay_content)
-                    .with_context(|| format!("Failed to parse overlay: {}", entry.path().display()))?;
-                merge_toml(&mut base, overlay);
-            }
-        }
+        apply_config_d_overlays(&mut base, config_d)?;
 
         let config: Config = base.try_into()
             .with_context(|| "Failed to deserialize merged config")?;
         Ok(config)
+    }
+
+    pub fn validate(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if (self.api.port as u32) > 65535 { warnings.push("api.port out of range".into()); }
+        if (self.proxy.port as u32) > 65535 { warnings.push("proxy.port out of range".into()); }
+        if !self.slack.webhook_url.is_empty() && !self.slack.webhook_url.starts_with("https://") {
+            warnings.push("slack.webhook should use https://".into());
+        }
+        if self.policy.enabled && !std::path::Path::new(&self.policy.dir).exists() {
+            warnings.push(format!("policy.dir '{}' does not exist", self.policy.dir));
+        }
+        warnings
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {

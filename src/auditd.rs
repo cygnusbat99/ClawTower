@@ -506,7 +506,7 @@ pub fn check_tamper_event(event: &ParsedEvent) -> Option<Alert> {
         && event.syscall_name == "connect"
     {
         let exe = extract_field(line, "exe").unwrap_or("unknown");
-        let exe_base = exe.rsplit('/').next().unwrap_or(exe);
+        let exe_base = crate::util::extract_binary_name(exe);
         const NET_SUSPICIOUS_EXES: &[&str] = &[
             "python3", "python", "node", "nodejs", "perl", "ruby", "php", "lua",
         ];
@@ -558,7 +558,7 @@ pub fn check_tamper_event(event: &ParsedEvent) -> Option<Alert> {
     // Network connect() detection via auditd (T6.1)
     if line.contains("key=\"clawtower_net_connect\"") || line.contains("key=clawtower_net_connect") {
         let exe = extract_field(line, "exe").unwrap_or("unknown");
-        let exe_base = exe.rsplit('/').next().unwrap_or(exe);
+        let exe_base = crate::util::extract_binary_name(exe);
         // Skip localhost connections and known-safe processes
         let is_safe = exe.contains("clawtower") || exe.contains("systemd") || exe.contains("dbus");
         if !is_safe {

@@ -1,24 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2025-2026 JR Morton
 
-#![allow(dead_code)]
 //! Layer 3: Memory Sentinel — hardware watchpoints, memory integrity scanning,
 //! cross-memory payload corruption, and process memory map parsing.
 //!
 //! See design doc §6 (Layer 3) for full rationale and architecture.
+//!
+//! ## Production Integration
+//!
+//! Gated on `[memory_sentinel] enabled = true` in config. When enabled, spawns
+//! a periodic scan loop that baselines and verifies process memory integrity,
+//! sending violations to the alert pipeline.
 
+use crate::alerts::{Alert, Severity};
 use crate::capabilities::PlatformCapabilities;
-#[allow(unused_imports)]
-use std::collections::HashMap;
+use crate::config::MemorySentinelConfig;
 use std::fs;
 use std::io;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
+// Hardware watchpoint constants — used by set_watchpoint() which is part of
+// the designed API surface (currently only exercised by tests).
+#[allow(dead_code)]
 const PERF_TYPE_BREAKPOINT: u32 = 5;
+#[allow(dead_code)]
 const HW_BREAKPOINT_W: u32 = 2;
+#[allow(dead_code)]
 const HW_BREAKPOINT_RW: u32 = 3;
+#[allow(dead_code)]
 const PERF_FLAG_FD_CLOEXEC: u64 = 1;
 
 /// Maximum length for cross-memory read/write operations (4 MB).
@@ -30,6 +42,7 @@ const MAX_MEMORY_OP_LEN: usize = 4 * 1024 * 1024;
 
 /// Threat level determines adaptive scan intervals and response intensity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(dead_code)]
 pub enum ThreatLevel {
     Normal,
     Elevated,
@@ -39,6 +52,7 @@ pub enum ThreatLevel {
 
 impl ThreatLevel {
     /// Adaptive scan interval for this threat level.
+    #[allow(dead_code)]
     pub fn scan_interval(&self) -> Duration {
         match self {
             ThreatLevel::Normal => Duration::from_secs(30),
@@ -53,6 +67,7 @@ impl ThreatLevel {
 
 /// Hardware watchpoint access type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum WatchType {
     /// Trigger on write access.
     Write,
@@ -73,6 +88,7 @@ impl WatchType {
 
 /// Handle to an active hardware watchpoint. Closing removes it.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct WatchpointHandle {
     fd: i32,
 }
@@ -85,7 +101,7 @@ impl Drop for WatchpointHandle {
 
 /// perf_event_attr for hardware breakpoints (simplified, zero-padded to kernel size).
 #[repr(C)]
-#[allow(non_camel_case_types)]
+#[allow(non_camel_case_types, dead_code)]
 struct perf_event_attr {
     type_: u32,
     size: u32,
@@ -110,6 +126,7 @@ struct perf_event_attr {
 /// * `watch_type` - Write or ReadWrite
 ///
 /// Returns a `WatchpointHandle` that removes the watchpoint on drop.
+#[allow(dead_code)]
 pub fn set_watchpoint(
     pid: i32,
     addr: u64,
@@ -145,6 +162,7 @@ pub fn set_watchpoint(
 }
 
 /// Remove a watchpoint (consumes the handle).
+#[allow(dead_code)]
 pub fn remove_watchpoint(handle: WatchpointHandle) {
     drop(handle);
 }
@@ -249,6 +267,7 @@ impl MemoryMap {
     }
 
     /// Find all loaded library regions (paths containing ".so").
+    #[allow(dead_code)]
     pub fn library_regions(&self) -> Vec<&MapRegion> {
         self.regions.iter()
             .filter(|r| r.path.as_deref().map_or(false, |p| p.contains(".so")))
@@ -503,6 +522,7 @@ impl MemoryIntegrity {
 /// # Safety
 /// This writes to another process's memory. Only call when you've confirmed
 /// the target region contains malicious code that must be neutralized.
+#[allow(dead_code)]
 pub fn corrupt_payload(
     pid: i32,
     addr: u64,
@@ -616,6 +636,106 @@ pub fn corrupt_payload(
     }
 
     Ok(())
+}
+
+// ── Production Run Loop ─────────────────────────────────────────────────────
+
+/// Run the memory sentinel as a periodic scan loop.
+///
+/// Baselines the target process's memory on startup, then periodically
+/// re-scans and sends violations to the alert pipeline.
+pub async fn run_memory_sentinel(
+    config: MemorySentinelConfig,
+    tx: mpsc::Sender<Alert>,
+) {
+    let pid = match config.target_pid {
+        Some(pid) => pid as i32,
+        None => {
+            eprintln!("[memory_sentinel] no target_pid configured, not starting");
+            return;
+        }
+    };
+
+    let caps = PlatformCapabilities::probe();
+    if !caps.proc_mem && !caps.cross_memory_attach {
+        eprintln!("[memory_sentinel] no memory access method available (need CAP_SYS_PTRACE)");
+        let _ = tx.send(Alert::new(
+            Severity::Warning,
+            "memory_sentinel",
+            "Memory sentinel cannot start: no memory access method available",
+        )).await;
+        return;
+    }
+
+    // Capture baseline
+    let integrity = match MemoryIntegrity::capture_baseline(pid, &caps) {
+        Ok(integrity) => {
+            eprintln!(
+                "[memory_sentinel] baseline captured for pid {}: {} regions",
+                pid,
+                integrity.region_count()
+            );
+            integrity
+        }
+        Err(e) => {
+            eprintln!("[memory_sentinel] failed to capture baseline for pid {}: {}", pid, e);
+            let _ = tx.send(Alert::new(
+                Severity::Warning,
+                "memory_sentinel",
+                &format!("Memory sentinel baseline failed for pid {}: {}", pid, e),
+            )).await;
+            return;
+        }
+    };
+
+    let interval = Duration::from_millis(config.scan_interval_ms);
+    let mut ticker = tokio::time::interval(interval);
+    ticker.tick().await; // skip first immediate tick
+
+    loop {
+        ticker.tick().await;
+
+        // Check if the process still exists
+        if !std::path::Path::new(&format!("/proc/{}", pid)).exists() {
+            eprintln!("[memory_sentinel] target pid {} no longer exists, stopping", pid);
+            let _ = tx.send(Alert::new(
+                Severity::Warning,
+                "memory_sentinel",
+                &format!("Memory sentinel target pid {} exited", pid),
+            )).await;
+            return;
+        }
+
+        let violations = integrity.scan(pid, &caps);
+        for violation in &violations {
+            let (severity, msg) = match violation {
+                Violation::TextModified { region_path, start, .. } => {
+                    (Severity::Critical, format!(
+                        ".text segment modified in {} at {:#x} (pid {})",
+                        region_path.as_deref().unwrap_or("unknown"),
+                        start,
+                        pid,
+                    ))
+                }
+                Violation::GotOverwrite { region_path, start, .. } => {
+                    (Severity::Critical, format!(
+                        "GOT/PLT overwrite detected in {} at {:#x} (pid {})",
+                        region_path.as_deref().unwrap_or("unknown"),
+                        start,
+                        pid,
+                    ))
+                }
+                Violation::RegionModified { start, .. } => {
+                    (Severity::Warning, format!(
+                        "Memory region modified at {:#x} (pid {})",
+                        start,
+                        pid,
+                    ))
+                }
+            };
+            let _ = tx.send(Alert::new(severity, "memory_sentinel", &msg)).await;
+        }
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

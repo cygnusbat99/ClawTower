@@ -43,38 +43,101 @@ if [[ "$MODE" == "update" ]]; then
     if [[ "$EXISTING_INSTALL" == true ]]; then
         MODE="upgrade"
     else
-        echo -e "\033[0;31m[ERROR]\033[0m ClawTower not fully installed. Run without --update for fresh install." >&2
+        echo -e "\n  \033[38;5;167m✗ ClawTower not fully installed. Run without --update for fresh install.\033[0m\n" >&2
         exit 1
     fi
 fi
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
+# ── Terminal UI ──────────────────────────────────────────────────────────────
+# 256-color palette with graceful fallback
+if [[ -t 1 ]] || [[ -t 2 ]] || [[ -n "${FORCE_COLOR:-}" ]]; then
+    RED='\033[38;5;167m'
+    GREEN='\033[38;5;108m'
+    AMBER='\033[38;5;179m'
+    YELLOW='\033[38;5;179m'
+    CYAN='\033[38;5;109m'
+    DIM='\033[2m'
+    BOLD='\033[1m'
+    NC='\033[0m'
+else
+    RED='' GREEN='' AMBER='' YELLOW='' CYAN='' DIM='' BOLD='' NC=''
+fi
 
-log()  { echo -e "${GREEN}[CLAWTOWER]${NC} $*"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
-die()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+TERM_WIDTH=$(tput cols 2>/dev/null || echo 72)
+[[ "$TERM_WIDTH" -gt 80 ]] && TERM_WIDTH=80
+
+log()  { echo -e "  ${GREEN}✓${NC} $*"; }
+warn() { echo -e "  ${AMBER}▲${NC} $*"; }
+info() { echo -e "  ${DIM}·${NC} ${DIM}$*${NC}"; }
+die()  { echo -e "\n  ${RED}✗ $*${NC}\n" >&2; exit 1; }
+
+# Section header with rounded border
+header() {
+    local title="$1" subtitle="${2:-}"
+    local line
+    line=$(printf '─%.0s' $(seq 1 $((TERM_WIDTH - 6))))
+    echo ""
+    printf "  ${AMBER}╭─${NC} ${BOLD}%s${NC}\n" "$title"
+    [[ -n "$subtitle" ]] && printf "  ${AMBER}│${NC}  ${DIM}%s${NC}\n" "$subtitle"
+    echo -e "  ${AMBER}╰${line}${NC}"
+    echo ""
+}
+
+# Danger header — red accent
+danger_header() {
+    local title="$1" subtitle="${2:-}"
+    local line
+    line=$(printf '─%.0s' $(seq 1 $((TERM_WIDTH - 6))))
+    echo ""
+    printf "  ${RED}╭─${NC} ${RED}${BOLD}%s${NC}\n" "$title"
+    [[ -n "$subtitle" ]] && printf "  ${RED}│${NC}  ${DIM}%s${NC}\n" "$subtitle"
+    echo -e "  ${RED}╰${line}${NC}"
+    echo ""
+}
+
+# Phase progress bar
+phase_bar() {
+    local current=$1; shift
+    local phases=("$@")
+    local i=0
+    echo -n "  "
+    for p in "${phases[@]}"; do
+        if [[ $i -lt $((current - 1)) ]]; then
+            echo -en "${GREEN}●${NC} ${DIM}${p}${NC}"
+        elif [[ $i -eq $((current - 1)) ]]; then
+            echo -en "${AMBER}●${NC} ${BOLD}${p}${NC}"
+        else
+            echo -en "${DIM}○ ${p}${NC}"
+        fi
+        [[ $i -lt $((${#phases[@]} - 1)) ]] && echo -en "  ${DIM}─${NC}  "
+        ((i++))
+    done
+    echo -e "\n"
+}
+
+# Separator
+sep() {
+    local line
+    line=$(printf '─%.0s' $(seq 1 $((TERM_WIDTH - 4))))
+    echo -e "  ${DIM}${line}${NC}"
+}
 
 confirm() {
     local prompt="$1"
     local response
     while true; do
-        echo -en "${CYAN}${prompt}${NC} " > /dev/tty
+        echo -en "  ${AMBER}▸${NC} ${prompt} " > /dev/tty
         read -r response < /dev/tty
         case "$response" in
             [yY]|[yY][eE][sS]) return 0 ;;
             [nN]|[nN][oO]) return 1 ;;
-            *) echo "Please answer yes or no." > /dev/tty ;;
+            *) echo -e "    ${DIM}Please answer yes or no.${NC}" > /dev/tty ;;
         esac
     done
 }
 
 wait_for_enter() {
-    echo -en "${CYAN}$1${NC}" > /dev/tty
+    echo -en "  ${AMBER}▸${NC} $1" > /dev/tty
     read -r < /dev/tty
 }
 
@@ -152,20 +215,14 @@ POLICYEOF
 # INTERACTIVE INSTALL DETECTION MENU
 # ═══════════════════════════════════════════════════════════════════════════════
 if [[ "$EXISTING_INSTALL" == "true" && "$MODE" == "install" ]]; then
-    echo ""
-    echo -e "${CYAN}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-    echo -e "${CYAN}${BOLD}  🛡️  ClawTower is already installed                               ${NC}"
-    echo -e "${CYAN}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-    echo ""
     CURRENT_VERSION=$(/usr/local/bin/clawtower --version 2>/dev/null || echo "unknown")
-    echo -e "  Current version: ${BOLD}$CURRENT_VERSION${NC}"
+    header "ClawTower is already installed" "Current version: $CURRENT_VERSION"
+    echo -e "  ${BOLD}1${NC}  ${DIM}Upgrade${NC}         swap binaries, keep config & key"
+    echo -e "  ${BOLD}2${NC}  ${DIM}Reconfigure${NC}     re-run config wizard, keep key"
+    echo -e "  ${BOLD}3${NC}  ${DIM}Full reinstall${NC}  nuke everything, start fresh"
+    echo -e "  ${BOLD}4${NC}  ${DIM}Abort${NC}"
     echo ""
-    echo -e "  ${BOLD}1)${NC} Upgrade        — swap binaries + refresh patterns & policy, keep config & key"
-    echo -e "  ${BOLD}2)${NC} Reconfigure    — re-run config wizard, keep key"
-    echo -e "  ${BOLD}3)${NC} Full reinstall — nuke everything, start from scratch"
-    echo -e "  ${BOLD}4)${NC} Abort"
-    echo ""
-    echo -en "  ${CYAN}Choose [1-4]: ${NC}" > /dev/tty
+    echo -en "  ${AMBER}▸${NC} Choose [1-4]: " > /dev/tty
     read -r menu_choice < /dev/tty
     case "$menu_choice" in
         1) MODE="upgrade" ;;
@@ -177,9 +234,9 @@ if [[ "$EXISTING_INSTALL" == "true" && "$MODE" == "install" ]]; then
 elif [[ "$EXISTING_INSTALL" == "partial" && "$MODE" == "install" ]]; then
     echo ""
     warn "Partial ClawTower installation detected (some files missing)."
-    echo -e "  Binary:     $([ "$HAS_BINARY" = true ] && echo "✓" || echo "✗")"
-    echo -e "  Config:     $([ "$HAS_CONFIG" = true ] && echo "✓" || echo "✗")"
-    echo -e "  Admin key:  $([ "$HAS_KEY" = true ] && echo "✓" || echo "✗")"
+    echo -e "    ${DIM}Binary${NC}     $([ "$HAS_BINARY" = true ] && echo "${GREEN}✓${NC}" || echo "${RED}✗${NC}")"
+    echo -e "    ${DIM}Config${NC}     $([ "$HAS_CONFIG" = true ] && echo "${GREEN}✓${NC}" || echo "${RED}✗${NC}")"
+    echo -e "    ${DIM}Admin key${NC}  $([ "$HAS_KEY" = true ] && echo "${GREEN}✓${NC}" || echo "${RED}✗${NC}")"
     echo ""
     if confirm "Proceed with fresh install? (will overwrite existing files) [y/n]"; then
         HAD_ADMIN_KEY=false
@@ -193,11 +250,7 @@ fi
 # UPGRADE MODE
 # ═══════════════════════════════════════════════════════════════════════════════
 if [[ "$MODE" == "upgrade" ]]; then
-    echo ""
-    echo -e "${CYAN}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-    echo -e "${CYAN}${BOLD}  🔄  ClawTower Upgrade                                           ${NC}"
-    echo -e "${CYAN}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-    echo ""
+    header "ClawTower Upgrade"
 
     CURRENT_VERSION=$(/usr/local/bin/clawtower --version 2>/dev/null || echo "unknown")
 
@@ -216,8 +269,8 @@ if [[ "$MODE" == "upgrade" ]]; then
         [[ -n "$VERSION" ]] || die "Could not determine latest version"
     fi
 
-    echo -e "  Current version: ${BOLD}$CURRENT_VERSION${NC}"
-    echo -e "  Available:       ${BOLD}$VERSION${NC}"
+    echo -e "  ${DIM}Current${NC}    ${BOLD}$CURRENT_VERSION${NC}"
+    echo -e "  ${DIM}Available${NC}  ${BOLD}$VERSION${NC}"
     echo ""
 
     if ! confirm "Upgrade to $VERSION? [Y/n]"; then
@@ -383,15 +436,11 @@ TRAYEOF
 
     if systemctl is-active --quiet clawtower; then
         NEW_VERSION=$(/usr/local/bin/clawtower --version 2>/dev/null || echo "$VERSION")
+        header "Upgrade complete" "$CURRENT_VERSION → $NEW_VERSION"
+        log "Your existing admin key and config are unchanged"
         echo ""
-        echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-        echo -e "${GREEN}${BOLD}  ✅  ClawTower upgraded: $CURRENT_VERSION → $NEW_VERSION         ${NC}"
-        echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-        echo ""
-        echo -e "  ${GREEN}✓ Your existing admin key and config are unchanged.${NC}"
-        echo ""
-        echo -e "  ${BOLD}Status:${NC}  systemctl status clawtower"
-        echo -e "  ${BOLD}Logs:${NC}    journalctl -u clawtower -f"
+        echo -e "  ${DIM}Status${NC}  systemctl status clawtower"
+        echo -e "  ${DIM}Logs${NC}    journalctl -u clawtower -f"
         echo ""
     else
         die "ClawTower failed to start after upgrade — check: journalctl -u clawtower -n 50"
@@ -403,15 +452,17 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════════
 # PHASE 1: DOWNLOAD
 # ═══════════════════════════════════════════════════════════════════════════════
+phase_bar 1 "Download" "Configure" "Lock Down" "Admin Key"
+echo -e "  ${DIM}     /==g           _${NC}"
+echo -e "  ${DIM}    //      >>>/---{_${NC}"
+echo -e "  ${AMBER}    \`==::[[[[|:${NC}${DIM}     _${NC}"
+echo -e "  ${DIM}            >>>\---{_${NC}"
 echo ""
-echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}${BOLD}  🛡️  ClawTower Installer                                        ${NC}"
-echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-echo ""
+header "ClawTower Installer" "OS-level runtime security for AI agents"
 echo -e "  This installer will:"
-echo -e "  ${BOLD}1.${NC} Download ClawTower binaries + BarnacleDefense patterns"
-echo -e "  ${BOLD}2.${NC} Let you configure before anything is locked down"
-echo -e "  ${BOLD}3.${NC} Lock the installation (immutable — requires recovery to undo)"
+echo -e "  ${DIM}1.${NC} Download binaries + BarnacleDefense patterns"
+echo -e "  ${DIM}2.${NC} Configure before anything is locked down"
+echo -e "  ${DIM}3.${NC} Lock the installation ${DIM}(immutable — requires recovery to undo)${NC}"
 echo ""
 
 if ! confirm "Continue? [y/n]"; then
@@ -619,24 +670,20 @@ systemctl daemon-reload
 systemctl enable clawtower
 
 echo ""
-log "✓ Phase 1 complete — files installed (NOT locked down yet)"
+log "Phase 1 complete — files installed ${DIM}(not locked down yet)${NC}"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PHASE 2: CONFIGURE
 # ═══════════════════════════════════════════════════════════════════════════════
-echo ""
-echo -e "${YELLOW}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${YELLOW}${BOLD}  ⚙️   CONFIGURATION                                           ${NC}"
-echo -e "${YELLOW}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-echo ""
+phase_bar 2 "Download" "Configure" "Lock Down" "Admin Key"
+header "Configuration"
 CONF="/etc/clawtower/config.toml"
 
 # ── Watched User ──────────────────────────────────────────────────────────────
 CALLING_USER="${SUDO_USER:-$(whoami)}"
 CALLING_UID=$(id -u "$CALLING_USER" 2>/dev/null || echo "1000")
-echo ""
-echo -e "  ${BOLD}User to monitor:${NC} $CALLING_USER (UID $CALLING_UID)"
-echo -en "  ${CYAN}Monitor this user? [Y/n] or enter a different UID: ${NC}" > /dev/tty
+echo -e "  ${BOLD}User to monitor:${NC} $CALLING_USER ${DIM}(UID $CALLING_UID)${NC}"
+echo -en "  ${AMBER}▸${NC} Monitor this user? [Y/n] or enter a different UID: " > /dev/tty
 read -r user_input < /dev/tty
 if [[ -z "$user_input" || "$user_input" =~ ^[yY] ]]; then
     WATCH_UID="$CALLING_UID"
@@ -648,7 +695,7 @@ log "Watching UID: $WATCH_UID"
 
 # ── Additional Users ──────────────────────────────────────────────────────────
 echo ""
-echo -en "  ${CYAN}Monitor additional UIDs? (comma-separated, or ENTER to skip): ${NC}" > /dev/tty
+echo -en "  ${AMBER}▸${NC} Monitor additional UIDs? ${DIM}(comma-separated, or ENTER to skip)${NC}: " > /dev/tty
 read -r extra_uids < /dev/tty
 if [[ -n "$extra_uids" ]]; then
     # Build TOML array like ["1000", "1001"]
@@ -664,21 +711,22 @@ if [[ -n "$extra_uids" ]]; then
 fi
 
 # ── Slack (Optional) ─────────────────────────────────────────────────────────
+sep
 echo ""
-echo -e "  ${BOLD}Slack Alerts${NC} (optional)"
-echo -e "  ClawTower can send alerts to an independent Slack webhook."
-echo -en "  ${CYAN}Slack webhook URL (or ENTER to skip): ${NC}" > /dev/tty
+echo -e "  ${BOLD}Slack Alerts${NC} ${DIM}(optional)${NC}"
+echo -e "  ${DIM}ClawTower can send alerts to an independent Slack webhook.${NC}"
+echo -en "  ${AMBER}▸${NC} Slack webhook URL ${DIM}(or ENTER to skip)${NC}: " > /dev/tty
 read -r slack_url < /dev/tty
 if [[ -n "$slack_url" ]]; then
     sed -i "s|^webhook_url = .*|webhook_url = \"$slack_url\"|" "$CONF"
     sed -i "s/^enabled = false/enabled = true/" "$CONF"  # enable slack section
     log "Slack alerts enabled"
 
-    echo -en "  ${CYAN}Slack channel (default: #devops): ${NC}" > /dev/tty
+    echo -en "  ${AMBER}▸${NC} Slack channel ${DIM}(default: #devops)${NC}: " > /dev/tty
     read -r slack_chan < /dev/tty
     [[ -n "$slack_chan" ]] && sed -i "s|^channel = .*|channel = \"$slack_chan\"|" "$CONF"
 
-    echo -en "  ${CYAN}Backup webhook URL (or ENTER to skip): ${NC}" > /dev/tty
+    echo -en "  ${AMBER}▸${NC} Backup webhook URL ${DIM}(or ENTER to skip)${NC}: " > /dev/tty
     read -r slack_backup < /dev/tty
     [[ -n "$slack_backup" ]] && sed -i "s|^backup_webhook_url = .*|backup_webhook_url = \"$slack_backup\"|" "$CONF"
 else
@@ -686,9 +734,10 @@ else
 fi
 
 # ── API ───────────────────────────────────────────────────────────────────────
+sep
 echo ""
-echo -e "  ${BOLD}JSON API${NC} (LAN-only status/alerts endpoint)"
-echo -en "  ${CYAN}Enable API on port 18791? [Y/n]: ${NC}" > /dev/tty
+echo -e "  ${BOLD}JSON API${NC} ${DIM}(LAN-only status/alerts endpoint)${NC}"
+echo -en "  ${AMBER}▸${NC} Enable API on port 18791? [Y/n]: " > /dev/tty
 read -r api_input < /dev/tty
 if [[ "$api_input" =~ ^[nN] ]]; then
     sed -i '/^\[api\]/,/^$/s/^enabled = true/enabled = false/' "$CONF"
@@ -698,9 +747,10 @@ else
 fi
 
 # ── BarnacleDefense ───────────────────────────────────────────────────────────
+sep
 echo ""
-echo -e "  ${BOLD}BarnacleDefense${NC} (prompt injection + supply chain detection patterns)"
-echo -en "  ${CYAN}Enable BarnacleDefense? [Y/n]: ${NC}" > /dev/tty
+echo -e "  ${BOLD}BarnacleDefense${NC} ${DIM}(prompt injection + supply chain detection)${NC}"
+echo -en "  ${AMBER}▸${NC} Enable BarnacleDefense? [Y/n]: " > /dev/tty
 read -r sc_input < /dev/tty
 if [[ "$sc_input" =~ ^[nN] ]]; then
     log "BarnacleDefense disabled"
@@ -711,17 +761,18 @@ else
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
+sep
 echo ""
-echo -e "  ${GREEN}${BOLD}Configuration summary:${NC}"
-echo -e "  ${BOLD}Config file:${NC}    $CONF"
-echo -e "  ${BOLD}Watched user:${NC}   UID $WATCH_UID"
+echo -e "  ${BOLD}Summary${NC}"
+echo -e "    ${DIM}Config${NC}       $CONF"
+echo -e "    ${DIM}Watched${NC}      UID $WATCH_UID"
 if grep -q 'webhook_url = ""' "$CONF" 2>/dev/null || ! grep -q 'webhook_url' "$CONF" 2>/dev/null; then
-    echo -e "  ${BOLD}Slack:${NC}          Disabled (logs only)"
+    echo -e "    ${DIM}Slack${NC}        Disabled ${DIM}(logs only)${NC}"
 else
-    echo -e "  ${BOLD}Slack:${NC}          Enabled"
+    echo -e "    ${DIM}Slack${NC}        Enabled"
 fi
 echo ""
-echo -e "  ${YELLOW}You can always edit $CONF later (before locking down).${NC}"
+echo -e "  ${DIM}You can edit $CONF later (before locking down).${NC}"
 echo ""
 
 if ! confirm "Configuration done? Ready to lock down? [y/n]"; then
@@ -735,25 +786,21 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════════
 # PHASE 3: LOCK DOWN (SWALLOWED KEY)
 # ═══════════════════════════════════════════════════════════════════════════════
-echo ""
-echo -e "${RED}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${RED}${BOLD}  🔒  LOCKING DOWN — THIS IS IRREVERSIBLE WITHOUT RECOVERY     ${NC}"
-echo -e "${RED}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-echo ""
+phase_bar 3 "Download" "Configure" "Lock Down" "Admin Key"
+danger_header "Locking Down" "This is irreversible without recovery mode"
 
 # ── Create human admin account ────────────────────────────────────────────────
 echo -e "  ${BOLD}Human Admin Account${NC}"
 echo ""
-echo -e "  ClawTower locks down the agent's user account (UID $WATCH_UID) so it"
-echo -e "  cannot disable, modify, or bypass the watchdog."
+echo -e "  ${DIM}ClawTower locks down the agent's user account (UID $WATCH_UID) so it${NC}"
+echo -e "  ${DIM}cannot disable, modify, or bypass the watchdog.${NC}"
 echo ""
-echo -e "  ${RED}${BOLD}⚠️  A separate human admin account is REQUIRED.${NC}"
-echo -e "  ${YELLOW}This is the only account that can manage ClawTower after lockdown.${NC}"
-echo -e "  ${YELLOW}Without it, you'll need recovery mode (boot from USB) to make changes.${NC}"
+echo -e "  ${RED}┃${NC} A separate human admin account is ${BOLD}required${NC}."
+echo -e "  ${RED}┃${NC} ${DIM}This is the only account that can manage ClawTower after lockdown.${NC}"
+echo -e "  ${RED}┃${NC} ${DIM}Without it, you'll need recovery mode (boot from USB).${NC}"
 echo ""
-echo -e "  ${RED}${BOLD}🔒 NEVER share this account's password with your AI agent.${NC}"
-echo -e "  ${RED}${BOLD}   The entire security model depends on this separation.${NC}"
-echo -e "  ${RED}${BOLD}   If the agent knows these credentials, it can bypass all protections.${NC}"
+echo -e "  ${RED}┃${NC} ${RED}${BOLD}Never share this account's credentials with your AI agent.${NC}"
+echo -e "  ${RED}┃${NC} ${DIM}The entire security model depends on this separation.${NC}"
 echo ""
 
 AGENT_USERNAME=$(getent passwd "$WATCH_UID" | cut -d: -f1 || echo "")
@@ -780,25 +827,25 @@ EXISTING_ADMINS=($(printf '%s\n' "${EXISTING_ADMINS[@]}" | sort -u))
 if [[ ${#EXISTING_ADMINS[@]} -gt 0 ]]; then
     echo -e "  ${GREEN}✓ Found existing admin account(s): ${BOLD}${EXISTING_ADMINS[*]}${NC}"
     echo ""
-    echo -en "  ${CYAN}Use existing admin account(s)? [Y/n]: ${NC}" > /dev/tty
+    echo -en "  ${AMBER}▸${NC} Use existing admin account(s)? [Y/n]: ${NC}" > /dev/tty
     read -r use_existing < /dev/tty
     if [[ ! "$use_existing" =~ ^[nN] ]]; then
         log "Using existing admin account(s): ${EXISTING_ADMINS[*]}"
         ADMIN_USERNAME="${EXISTING_ADMINS[0]}"
         create_admin="n"
     else
-        echo -en "  ${CYAN}Create an additional admin account? [Y/n]: ${NC}" > /dev/tty
+        echo -en "  ${AMBER}▸${NC} Create an additional admin account? [Y/n]: ${NC}" > /dev/tty
         read -r create_admin < /dev/tty
     fi
 else
-    echo -en "  ${CYAN}Create a human admin account? [Y/n]: ${NC}" > /dev/tty
+    echo -en "  ${AMBER}▸${NC} Create a human admin account? [Y/n]: ${NC}" > /dev/tty
     read -r create_admin < /dev/tty
 fi
 
 if [[ "$create_admin" =~ ^[nN] && ${#EXISTING_ADMINS[@]} -eq 0 ]]; then
     echo ""
     warn "No admin account found and none being created."
-    echo -en "  ${CYAN}Do you already have a separate admin account? [y/N]: ${NC}" > /dev/tty
+    echo -en "  ${AMBER}▸${NC} Do you already have a separate admin account? [y/N]: ${NC}" > /dev/tty
     read -r has_admin < /dev/tty
     if [[ ! "$has_admin" =~ ^[yY] ]]; then
         die "Cannot proceed without a human admin account. Re-run the installer and create one."
@@ -806,7 +853,7 @@ if [[ "$create_admin" =~ ^[nN] && ${#EXISTING_ADMINS[@]} -eq 0 ]]; then
 fi
 
 if [[ ! "$create_admin" =~ ^[nN] ]]; then
-    echo -en "  ${CYAN}Username for admin account: ${NC}" > /dev/tty
+    echo -en "  ${AMBER}▸${NC} Username for admin account: ${NC}" > /dev/tty
     read -r ADMIN_USERNAME < /dev/tty
     [[ -n "$ADMIN_USERNAME" ]] || { warn "No username provided — skipping admin account"; ADMIN_USERNAME=""; }
 
@@ -842,16 +889,14 @@ SUDOEOF
         fi
 
         echo ""
-        log "✓ Admin account '$ADMIN_USERNAME' created with full sudo access"
+        log "Admin account '${BOLD}$ADMIN_USERNAME${NC}' created with full sudo access"
         echo ""
-        echo -e "  ${GREEN}Use this account for all system administration.${NC}"
-        echo -e "  ${GREEN}SSH in as: ssh ${ADMIN_USERNAME}@$(hostname)${NC}"
+        echo -e "  ${DIM}Use this account for all system administration.${NC}"
+        echo -e "  ${DIM}SSH in as:${NC} ssh ${BOLD}${ADMIN_USERNAME}${NC}@$(hostname)"
         echo ""
-        echo -e "  ${RED}${BOLD}╔════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "  ${RED}${BOLD}║  🚨  NEVER share '${ADMIN_USERNAME}' credentials with your AI agent  ║${NC}"
-        echo -e "  ${RED}${BOLD}║  The agent CANNOT know this password or SSH key.          ║${NC}"
-        echo -e "  ${RED}${BOLD}║  This is the foundation of ClawTower's security model.       ║${NC}"
-        echo -e "  ${RED}${BOLD}╚════════════════════════════════════════════════════════════╝${NC}"
+        echo -e "  ${RED}┃${NC} ${RED}${BOLD}Never share '${ADMIN_USERNAME}' credentials with your AI agent.${NC}"
+        echo -e "  ${RED}┃${NC} ${DIM}The agent cannot know this password or SSH key.${NC}"
+        echo -e "  ${RED}┃${NC} ${DIM}This is the foundation of ClawTower's security model.${NC}"
         echo ""
     fi
 fi
@@ -952,55 +997,47 @@ if [[ "$HAD_ADMIN_KEY" == "true" ]]; then
     echo -e "  ${GREEN}✓ Your existing admin key is still valid. No new key was generated.${NC}"
     echo ""
 else
-    echo ""
-    echo ""
-    echo -e "${RED}${BOLD}╔══════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}${BOLD}║                                                                  ║${NC}"
-    echo -e "${RED}${BOLD}║   ⚠️  SAVE YOUR ADMIN KEY — YOU WILL NOT SEE IT AGAIN ⚠️          ║${NC}"
-    echo -e "${RED}${BOLD}║                                                                  ║${NC}"
-    echo -e "${RED}${BOLD}║   Your admin key was displayed when ClawTower first started.        ║${NC}"
-    echo -e "${RED}${BOLD}║   Check the service logs:                                        ║${NC}"
-    echo -e "${RED}${BOLD}║                                                                  ║${NC}"
-    echo -e "${RED}${BOLD}║     sudo journalctl -u clawtower -n 50 | grep OCAV-                 ║${NC}"
-    echo -e "${RED}${BOLD}║                                                                  ║${NC}"
-    echo -e "${RED}${BOLD}║   WITHOUT THIS KEY:                                              ║${NC}"
-    echo -e "${RED}${BOLD}║   • You cannot pause, configure, or manage ClawTower                ║${NC}"
-    echo -e "${RED}${BOLD}║   • You cannot update or uninstall it                            ║${NC}"
-    echo -e "${RED}${BOLD}║   • Your ONLY option is RECOVERY MODE (boot from USB)            ║${NC}"
-    echo -e "${RED}${BOLD}║                                                                  ║${NC}"
-    echo -e "${RED}${BOLD}║   Save it in your password manager NOW.                          ║${NC}"
-    echo -e "${RED}${BOLD}║                                                                  ║${NC}"
-    echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
+    phase_bar 4 "Download" "Configure" "Lock Down" "Admin Key"
+    danger_header "Save Your Admin Key" "You will not see it again"
+
+    echo -e "  ${RED}┃${NC} Your admin key was displayed when ClawTower first started."
+    echo -e "  ${RED}┃${NC} Check the service logs:"
+    echo -e "  ${RED}┃${NC}"
+    echo -e "  ${RED}┃${NC}   ${BOLD}sudo journalctl -u clawtower -n 50 | grep OCAV-${NC}"
+    echo -e "  ${RED}┃${NC}"
+    echo -e "  ${RED}┃${NC} ${DIM}Without this key:${NC}"
+    echo -e "  ${RED}┃${NC} ${DIM}  You cannot pause, configure, or manage ClawTower${NC}"
+    echo -e "  ${RED}┃${NC} ${DIM}  You cannot update or uninstall it${NC}"
+    echo -e "  ${RED}┃${NC} ${DIM}  Your only option is recovery mode (boot from USB)${NC}"
     echo ""
 
     # Show the key right here if we can find it
     ADMIN_KEY=$(journalctl -u clawtower -n 50 --no-pager 2>/dev/null | grep -oP 'OCAV-[a-f0-9]+' | head -1)
     if [[ -n "$ADMIN_KEY" ]]; then
-        echo -e "  ${BOLD}Your admin key:${NC}"
+        sep
         echo ""
-        echo -e "    ${GREEN}${BOLD}$ADMIN_KEY${NC}"
+        echo -e "  ${DIM}Your admin key:${NC}"
         echo ""
+        echo -e "    ${AMBER}${BOLD}$ADMIN_KEY${NC}"
+        echo ""
+        sep
     fi
 
+    echo ""
     while true; do
-        echo -en "${RED}${BOLD}  Type 'I SAVED MY KEY' to confirm: ${NC}" > /dev/tty
+        echo -en "  ${RED}▸${NC} Type '${BOLD}I SAVED MY KEY${NC}' to confirm: " > /dev/tty
         read -r response < /dev/tty
         if [[ "$response" == "I SAVED MY KEY" ]]; then
             break
         fi
-        echo -e "  ${RED}You must type exactly: I SAVED MY KEY${NC}" > /dev/tty
+        echo -e "    ${DIM}You must type exactly: I SAVED MY KEY${NC}" > /dev/tty
     done
 fi
 
-echo ""
-echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}${BOLD}  ✅  ClawTower $VERSION installed and locked down                ${NC}"
-echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-echo ""
-echo -e "  ${BOLD}Binaries:${NC}  /usr/local/bin/clawtower, /usr/local/bin/clawsudo"
-echo -e "  ${BOLD}Config:${NC}    /etc/clawtower/config.toml (immutable)"
-echo -e "  ${BOLD}Logs:${NC}      journalctl -u clawtower -f"
-echo -e "  ${BOLD}Status:${NC}    systemctl status clawtower"
-echo -e "  ${BOLD}Patterns:${NC}  /etc/clawtower/barnacle/"
+header "ClawTower $VERSION installed and locked down"
+echo -e "  ${DIM}Binaries${NC}   /usr/local/bin/clawtower, /usr/local/bin/clawsudo"
+echo -e "  ${DIM}Config${NC}     /etc/clawtower/config.toml ${DIM}(immutable)${NC}"
+echo -e "  ${DIM}Logs${NC}       journalctl -u clawtower -f"
+echo -e "  ${DIM}Status${NC}     systemctl status clawtower"
+echo -e "  ${DIM}Patterns${NC}   /etc/clawtower/barnacle/"
 echo ""

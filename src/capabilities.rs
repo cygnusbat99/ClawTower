@@ -351,6 +351,40 @@ impl PlatformCapabilities {
     }
 }
 
+// ── Probe macro ─────────────────────────────────────────────────────────────
+
+/// Probe a capability by attempting a syscall that returns a file descriptor.
+///
+/// On success (fd >= 0): closes the fd and returns `true`.
+/// On failure: if `eperm_is_ok` is true, returns `true` when the error is EPERM
+/// (meaning the kernel supports the feature but the process lacks privileges).
+/// Otherwise returns `false`.
+///
+/// Handles both `i32` (direct libc calls) and `i64` (`libc::syscall`) return types.
+macro_rules! probe_fd_syscall {
+    // Variant: EPERM counts as success (capability exists but restricted)
+    (eperm_ok, $syscall:expr) => {{
+        let ret = unsafe { $syscall };
+        if ret >= 0 {
+            unsafe { libc::close(ret as i32) };
+            true
+        } else {
+            let e = io::Error::last_os_error();
+            e.raw_os_error() == Some(libc::EPERM)
+        }
+    }};
+    // Variant: failure always means unsupported
+    ($syscall:expr) => {{
+        let ret = unsafe { $syscall };
+        if ret >= 0 {
+            unsafe { libc::close(ret as i32) };
+            true
+        } else {
+            false
+        }
+    }};
+}
+
 // ── Probe implementations ──────────────────────────────────────────────────
 
 fn detect_arch() -> Arch {
@@ -494,51 +528,24 @@ fn probe_ftrace_syscalls() -> bool {
 }
 
 fn probe_userfaultfd() -> bool {
-    let ret = unsafe { libc::syscall(libc::SYS_userfaultfd, 0i32) };
-    if ret >= 0 {
-        unsafe { libc::close(ret as i32) };
-        true
-    } else {
-        let e = io::Error::last_os_error();
-        // EPERM = exists but restricted; ENOSYS = not compiled in
-        e.raw_os_error() == Some(libc::EPERM)
-    }
+    // EPERM = exists but restricted; ENOSYS = not compiled in
+    probe_fd_syscall!(eperm_ok, libc::syscall(libc::SYS_userfaultfd, 0i32))
 }
 
 fn probe_fanotify() -> bool {
     // FAN_CLOEXEC = 0x00000001, FAN_CLASS_NOTIF = 0x00000000
-    let ret = unsafe { libc::fanotify_init(0x01, libc::O_RDONLY as u32) };
-    if ret >= 0 {
-        unsafe { libc::close(ret) };
-        true
-    } else {
-        let e = io::Error::last_os_error();
-        e.raw_os_error() == Some(libc::EPERM)
-    }
+    probe_fd_syscall!(eperm_ok, libc::fanotify_init(0x01, libc::O_RDONLY as u32))
 }
 
 fn probe_fanotify_access_perms() -> bool {
     // FAN_CLASS_CONTENT = 0x00000004, FAN_CLOEXEC = 0x00000001
-    let ret = unsafe { libc::fanotify_init(0x04 | 0x01, libc::O_RDONLY as u32) };
-    if ret >= 0 {
-        unsafe { libc::close(ret) };
-        true
-    } else {
-        let e = io::Error::last_os_error();
-        // EPERM = supported but need CAP_SYS_ADMIN
-        // EINVAL = not compiled in (FAN_CLASS_CONTENT not recognized)
-        e.raw_os_error() == Some(libc::EPERM)
-    }
+    // EPERM = supported but need CAP_SYS_ADMIN
+    // EINVAL = not compiled in (FAN_CLASS_CONTENT not recognized)
+    probe_fd_syscall!(eperm_ok, libc::fanotify_init(0x04 | 0x01, libc::O_RDONLY as u32))
 }
 
 fn probe_inotify() -> bool {
-    let ret = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
-    if ret >= 0 {
-        unsafe { libc::close(ret) };
-        true
-    } else {
-        false
-    }
+    probe_fd_syscall!(libc::inotify_init1(libc::IN_CLOEXEC))
 }
 
 fn probe_cross_memory_attach() -> bool {
@@ -586,13 +593,7 @@ fn probe_proc_pagemap() -> bool {
 
 fn probe_memfd_create() -> bool {
     let name = b"clawtower_probe\0";
-    let ret = unsafe { libc::syscall(libc::SYS_memfd_create, name.as_ptr(), 0u32) };
-    if ret >= 0 {
-        unsafe { libc::close(ret as i32) };
-        true
-    } else {
-        false
-    }
+    probe_fd_syscall!(libc::syscall(libc::SYS_memfd_create, name.as_ptr(), 0u32))
 }
 
 fn probe_hw_breakpoints(_arch: Arch) -> (u8, u8) {

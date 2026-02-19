@@ -458,186 +458,6 @@ impl BarnacleEngine {
     }
 
     /// Check command specifically against dangerous command patterns
-    /// Known-safe sudo commands that should not trigger alerts.
-    /// These are legitimate system operations (ClawTower scans, service management, etc.)
-    const SUDO_ALLOWLIST: &'static [&'static str] = &[
-        // Firewall management
-        "sudo ufw",
-        "sudo iptables -L",
-        "sudo iptables -S",
-        "sudo netfilter-persistent",
-        
-        // Service management
-        "sudo systemctl status",
-        "sudo systemctl start",
-        "sudo systemctl stop",
-        "sudo systemctl restart",
-        "sudo systemctl is-active",
-        "sudo systemctl is-enabled",
-        "sudo systemctl reload",
-        "sudo systemctl daemon-reload",
-        
-        // Log analysis
-        "sudo journalctl",
-        "sudo tail ",
-        "sudo head ",
-        "sudo less /var/log",
-        "sudo cat /var/log",
-        "sudo grep",
-        "sudo zcat",
-        "sudo zless",
-        
-        // Audit system
-        "sudo auditctl",
-        "sudo ausearch",
-        "sudo aureport",
-        "sudo auditd",
-        
-        // Package management
-        "sudo apt",
-        "sudo apt-get",
-        "sudo aptitude",
-        "sudo dpkg",
-        "sudo snap",
-        "sudo yum",
-        "sudo dnf",
-        "sudo rpm",
-        "sudo zypper",
-        
-        // File operations
-        "sudo cp ",
-        "sudo rm ",
-        "sudo mv ",
-        "sudo mkdir",
-        "sudo rmdir",
-        "sudo install",
-        "sudo ln ",
-        
-        // Permissions
-        "sudo chown",
-        "sudo chmod",
-        "sudo chgrp",
-        "sudo chattr",
-        
-        // Text processing
-        "sudo tee ",
-        "sudo sed ",
-        "sudo awk ",
-        "sudo sort",
-        "sudo uniq",
-        "sudo wc ",
-        
-        // File viewing
-        "sudo cat ",
-        "sudo more ",
-        "sudo less ",
-        "sudo head ",
-        "sudo tail ",
-        
-        // Network diagnostics
-        "sudo ss ",
-        "sudo netstat",
-        "sudo lsof",
-        "sudo tcpdump",
-        "sudo nmap 127.0.0.1",
-        "sudo nmap localhost",
-        
-        // Process management
-        "sudo ps ",
-        "sudo pgrep",
-        "sudo pkill",
-        "sudo kill ",
-        "sudo killall",
-        "sudo top",
-        "sudo htop",
-        
-        // System information
-        "sudo lshw",
-        "sudo lscpu",
-        "sudo lsblk",
-        "sudo lsusb",
-        "sudo lspci",
-        "sudo dmidecode",
-        "sudo fdisk -l",
-        "sudo df ",
-        "sudo du ",
-        "sudo free",
-        "sudo uptime",
-        "sudo whoami",
-        "sudo id ",
-        
-        // Mount operations
-        "sudo mount ",
-        "sudo umount",
-        "sudo blkid",
-        "sudo findmnt",
-        
-        // Security scanning
-        "sudo find",
-        "sudo locate",
-        "sudo which",
-        "sudo whereis",
-        "sudo file ",
-        "sudo stat ",
-        "sudo ls ",
-        
-        // Time/date
-        "sudo date",
-        "sudo timedatectl",
-        "sudo hwclock",
-        
-        // Hardware
-        "sudo modprobe",
-        "sudo lsmod",
-        "sudo modinfo",
-        
-        // Performance monitoring
-        "sudo iotop",
-        "sudo iftop",
-        "sudo vmstat",
-        "sudo iostat",
-        "sudo sar ",
-        
-        // User management (read-only)
-        "sudo getent",
-        "sudo id ",
-        "sudo groups",
-        "sudo who",
-        "sudo w ",
-        "sudo last",
-        "sudo lastlog",
-        
-        // Certificate/crypto operations  
-        "sudo openssl",
-        "sudo gpg",
-        
-        // Archive/compression (read operations)
-        "sudo tar -tf",
-        "sudo tar -xf", 
-        "sudo unzip -l",
-        "sudo gunzip",
-        "sudo bunzip2",
-        
-        // Docker/container management
-        "sudo docker ps",
-        "sudo docker images",
-        "sudo docker inspect",
-        "sudo docker logs",
-        "sudo docker stats",
-        "sudo podman",
-        
-        // Database utilities (read-only)
-        "sudo sqlite3",
-        
-        // User switching (common in deploy scripts)
-        "sudo -u ",
-        
-        // ClawTower specific
-        "sudo clawtower",
-        "sudo /usr/local/bin/clawtower",
-        "sudo /opt/clawtower/bin/clawtower",
-    ];
-
     pub fn check_command(&self, cmd: &str) -> Vec<PatternMatch> {
         let mut matches = Vec::new();
         let cmd_lower = cmd.to_lowercase();
@@ -1063,13 +883,208 @@ pub fn run_update_ioc(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+// ─── Sudo Allowlist ─────────────────────────────────────────────────────────
+//
+// Known-safe sudo command prefixes that should not trigger alerts in the
+// BarnacleDefense pattern engine. These are legitimate system operations
+// (ClawTower scans, service management, package management, etc.).
+//
+// This is a static allowlist today. Future work: load from a TOML/YAML config
+// file (e.g. `/etc/clawtower/sudo-allowlist.toml`) so operators can customize
+// without recompiling. The `is_sudo_allowlisted()` function below already
+// uses token-prefix matching, so swapping the backing store is straightforward.
+//
+// Each entry is a space-separated token prefix. The matching algorithm splits
+// both the allowlist entry and the incoming command into whitespace tokens,
+// then checks if the command tokens start with the allowlist tokens. Trailing
+// spaces in entries like `"sudo cp "` ensure the prefix doesn't match longer
+// commands (e.g. `"sudo cpio"`).
+
+const SUDO_ALLOWLIST: &[&str] = &[
+    // ── Firewall management ──
+    "sudo ufw",
+    "sudo iptables -L",
+    "sudo iptables -S",
+    "sudo netfilter-persistent",
+
+    // ── Service management ──
+    "sudo systemctl status",
+    "sudo systemctl start",
+    "sudo systemctl stop",
+    "sudo systemctl restart",
+    "sudo systemctl is-active",
+    "sudo systemctl is-enabled",
+    "sudo systemctl reload",
+    "sudo systemctl daemon-reload",
+
+    // ── Log analysis ──
+    "sudo journalctl",
+    "sudo tail ",
+    "sudo head ",
+    "sudo less /var/log",
+    "sudo cat /var/log",
+    "sudo grep",
+    "sudo zcat",
+    "sudo zless",
+
+    // ── Audit system ──
+    "sudo auditctl",
+    "sudo ausearch",
+    "sudo aureport",
+    "sudo auditd",
+
+    // ── Package management ──
+    "sudo apt",
+    "sudo apt-get",
+    "sudo aptitude",
+    "sudo dpkg",
+    "sudo snap",
+    "sudo yum",
+    "sudo dnf",
+    "sudo rpm",
+    "sudo zypper",
+
+    // ── File operations ──
+    "sudo cp ",
+    "sudo rm ",
+    "sudo mv ",
+    "sudo mkdir",
+    "sudo rmdir",
+    "sudo install",
+    "sudo ln ",
+
+    // ── Permissions ──
+    "sudo chown",
+    "sudo chmod",
+    "sudo chgrp",
+    "sudo chattr",
+
+    // ── Text processing ──
+    "sudo tee ",
+    "sudo sed ",
+    "sudo awk ",
+    "sudo sort",
+    "sudo uniq",
+    "sudo wc ",
+
+    // ── File viewing ──
+    "sudo cat ",
+    "sudo more ",
+    "sudo less ",
+    "sudo head ",
+    "sudo tail ",
+
+    // ── Network diagnostics ──
+    "sudo ss ",
+    "sudo netstat",
+    "sudo lsof",
+    "sudo tcpdump",
+    "sudo nmap 127.0.0.1",
+    "sudo nmap localhost",
+
+    // ── Process management ──
+    "sudo ps ",
+    "sudo pgrep",
+    "sudo pkill",
+    "sudo kill ",
+    "sudo killall",
+    "sudo top",
+    "sudo htop",
+
+    // ── System information ──
+    "sudo lshw",
+    "sudo lscpu",
+    "sudo lsblk",
+    "sudo lsusb",
+    "sudo lspci",
+    "sudo dmidecode",
+    "sudo fdisk -l",
+    "sudo df ",
+    "sudo du ",
+    "sudo free",
+    "sudo uptime",
+    "sudo whoami",
+    "sudo id ",
+
+    // ── Mount operations ──
+    "sudo mount ",
+    "sudo umount",
+    "sudo blkid",
+    "sudo findmnt",
+
+    // ── Security scanning ──
+    "sudo find",
+    "sudo locate",
+    "sudo which",
+    "sudo whereis",
+    "sudo file ",
+    "sudo stat ",
+    "sudo ls ",
+
+    // ── Time/date ──
+    "sudo date",
+    "sudo timedatectl",
+    "sudo hwclock",
+
+    // ── Hardware ──
+    "sudo modprobe",
+    "sudo lsmod",
+    "sudo modinfo",
+
+    // ── Performance monitoring ──
+    "sudo iotop",
+    "sudo iftop",
+    "sudo vmstat",
+    "sudo iostat",
+    "sudo sar ",
+
+    // ── User management (read-only) ──
+    "sudo getent",
+    "sudo id ",
+    "sudo groups",
+    "sudo who",
+    "sudo w ",
+    "sudo last",
+    "sudo lastlog",
+
+    // ── Certificate/crypto operations ──
+    "sudo openssl",
+    "sudo gpg",
+
+    // ── Archive/compression (read operations) ──
+    "sudo tar -tf",
+    "sudo tar -xf",
+    "sudo unzip -l",
+    "sudo gunzip",
+    "sudo bunzip2",
+
+    // ── Docker/container management ──
+    "sudo docker ps",
+    "sudo docker images",
+    "sudo docker inspect",
+    "sudo docker logs",
+    "sudo docker stats",
+    "sudo podman",
+
+    // ── Database utilities (read-only) ──
+    "sudo sqlite3",
+
+    // ── User switching (common in deploy scripts) ──
+    "sudo -u ",
+
+    // ── ClawTower specific ──
+    "sudo clawtower",
+    "sudo /usr/local/bin/clawtower",
+    "sudo /opt/clawtower/bin/clawtower",
+];
+
 /// Check if a sudo command is in the allowlist using token-aware matching.
 /// Returns true if the command is considered safe, false if it should be flagged.
 fn is_sudo_allowlisted(cmd: &str) -> bool {
     let cmd_lower = cmd.to_lowercase();
     let tokens: Vec<&str> = cmd_lower.split_whitespace().collect();
 
-    for allowed in BarnacleEngine::SUDO_ALLOWLIST {
+    for allowed in SUDO_ALLOWLIST {
         let allowed_tokens: Vec<&str> = allowed.split_whitespace().collect();
         if tokens.len() >= allowed_tokens.len()
             && tokens[..allowed_tokens.len()]

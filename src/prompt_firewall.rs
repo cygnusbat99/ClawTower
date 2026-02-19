@@ -26,6 +26,8 @@ pub enum ThreatCategory {
     Jailbreak,
     ToolAbuse,
     SystemPromptExtract,
+    SocialEngineering,
+    IndirectInjection,
 }
 
 /// Action to take when a pattern matches.
@@ -63,9 +65,10 @@ pub fn tier_default_action(tier: u8, category: ThreatCategory) -> FirewallAction
     match tier {
         1 => FirewallAction::Log,
         2 => match category {
-            ThreatCategory::PromptInjection | ThreatCategory::ExfilViaPrompt => {
-                FirewallAction::Block
-            }
+            ThreatCategory::PromptInjection
+            | ThreatCategory::ExfilViaPrompt
+            | ThreatCategory::IndirectInjection => FirewallAction::Block,
+            ThreatCategory::SocialEngineering => FirewallAction::Warn,
             _ => FirewallAction::Log,
         },
         _ => FirewallAction::Block,
@@ -79,6 +82,8 @@ fn category_config_key(category: ThreatCategory) -> &'static str {
         ThreatCategory::Jailbreak => "jailbreak",
         ThreatCategory::ToolAbuse => "tool_abuse",
         ThreatCategory::SystemPromptExtract => "system_prompt_extract",
+        ThreatCategory::SocialEngineering => "social_engineering",
+        ThreatCategory::IndirectInjection => "indirect_injection",
     }
 }
 
@@ -147,6 +152,8 @@ fn parse_category(s: &str) -> Option<ThreatCategory> {
         "jailbreak" => Some(ThreatCategory::Jailbreak),
         "tool_abuse" => Some(ThreatCategory::ToolAbuse),
         "system_prompt_extract" => Some(ThreatCategory::SystemPromptExtract),
+        "social_engineering" => Some(ThreatCategory::SocialEngineering),
+        "indirect_injection" => Some(ThreatCategory::IndirectInjection),
         _ => None,
     }
 }
@@ -276,6 +283,8 @@ mod tests {
             ThreatCategory::Jailbreak,
             ThreatCategory::ToolAbuse,
             ThreatCategory::SystemPromptExtract,
+            ThreatCategory::SocialEngineering,
+            ThreatCategory::IndirectInjection,
         ] {
             assert_eq!(
                 tier_default_action(1, cat),
@@ -295,6 +304,18 @@ mod tests {
         assert_eq!(
             tier_default_action(2, ThreatCategory::ExfilViaPrompt),
             FirewallAction::Block
+        );
+        assert_eq!(
+            tier_default_action(2, ThreatCategory::IndirectInjection),
+            FirewallAction::Block
+        );
+    }
+
+    #[test]
+    fn test_tier2_warns_social_engineering() {
+        assert_eq!(
+            tier_default_action(2, ThreatCategory::SocialEngineering),
+            FirewallAction::Warn
         );
     }
 
@@ -322,6 +343,8 @@ mod tests {
             ThreatCategory::Jailbreak,
             ThreatCategory::ToolAbuse,
             ThreatCategory::SystemPromptExtract,
+            ThreatCategory::SocialEngineering,
+            ThreatCategory::IndirectInjection,
         ] {
             assert_eq!(
                 tier_default_action(3, cat),
@@ -501,8 +524,8 @@ mod tests {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/patterns/prompt-firewall-patterns.json");
         if std::path::Path::new(path).exists() {
             let fw = PromptFirewall::load(path, 2, &HashMap::new()).unwrap();
-            assert!(fw.total_patterns() >= 40, "Expected 40+ patterns, got {}", fw.total_patterns());
-            assert_eq!(fw.category_count(), 5, "Expected all 5 categories");
+            assert!(fw.total_patterns() >= 100, "Expected 100+ patterns, got {}", fw.total_patterns());
+            assert_eq!(fw.category_count(), 7, "Expected all 7 categories");
         }
     }
 

@@ -7,12 +7,63 @@
 //! against a stored baseline to detect regressions (e.g., auth disabled,
 //! policies loosened, dangerous flags enabled).
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 
 use crate::scanner::{ScanResult, ScanStatus};
 use crate::safe_match::field_exact_match;
+
+// ── Config types (moved from config.rs) ──────────────────────────────────────
+
+/// OpenClaw-specific security monitoring configuration.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct OpenClawConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_openclaw_config_path")]
+    pub config_path: String,
+    #[serde(default = "default_openclaw_state_dir")]
+    pub state_dir: String,
+    #[serde(default = "default_openclaw_audit_cmd")]
+    pub audit_command: String,
+    #[serde(default = "default_true")]
+    pub audit_on_scan: bool,
+    #[serde(default = "default_true")]
+    pub config_drift_check: bool,
+    #[serde(default = "default_openclaw_baseline_path")]
+    pub baseline_path: String,
+    #[serde(default)]
+    pub mdns_check: bool,
+    #[serde(default)]
+    pub plugin_watch: bool,
+    #[serde(default)]
+    pub session_log_audit: bool,
+}
+
+fn default_true() -> bool { true }
+fn default_openclaw_config_path() -> String { "/home/openclaw/.openclaw/openclaw.json".to_string() }
+fn default_openclaw_state_dir() -> String { "/home/openclaw/.openclaw".to_string() }
+fn default_openclaw_audit_cmd() -> String { "openclaw security audit --deep".to_string() }
+fn default_openclaw_baseline_path() -> String { "/etc/clawtower/openclaw-config-baseline.json".to_string() }
+
+impl Default for OpenClawConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            config_path: default_openclaw_config_path(),
+            state_dir: default_openclaw_state_dir(),
+            audit_command: default_openclaw_audit_cmd(),
+            audit_on_scan: true,
+            config_drift_check: true,
+            baseline_path: default_openclaw_baseline_path(),
+            mdns_check: false,
+            plugin_watch: false,
+            session_log_audit: false,
+        }
+    }
+}
 
 /// A detected configuration drift.
 #[derive(Debug, Clone)]

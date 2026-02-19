@@ -14,10 +14,135 @@
 //! aggregator output) and fans out to all enabled backends.
 
 use chrono::{DateTime, Local};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::alerts::{Alert, Severity};
-use crate::config::ExportConfig;
+
+// ── Config types (moved from config.rs) ──────────────────────────────────────
+
+/// SIEM export pipeline configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ExportConfig {
+    /// Enable the export pipeline.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Syslog export sub-config.
+    #[serde(default)]
+    pub syslog: SyslogExportConfig,
+    /// Webhook export sub-config.
+    #[serde(default)]
+    pub webhook: WebhookExportConfig,
+    /// File export sub-config (for Splunk forwarder / Fluentd).
+    #[serde(default)]
+    pub file: FileExportConfig,
+}
+
+impl Default for ExportConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            syslog: SyslogExportConfig::default(),
+            webhook: WebhookExportConfig::default(),
+            file: FileExportConfig::default(),
+        }
+    }
+}
+
+/// Syslog (CEF / RFC 5424) export configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SyslogExportConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Target address (e.g., "udp://siem.corp:514", "tcp://siem.corp:6514")
+    #[serde(default = "default_syslog_target")]
+    pub target: String,
+    /// Format: "cef" (Common Event Format) or "rfc5424"
+    #[serde(default = "default_syslog_format")]
+    pub format: String,
+    /// Minimum severity for syslog export
+    #[serde(default = "default_syslog_min_level")]
+    pub min_level: String,
+}
+
+fn default_syslog_target() -> String { "udp://127.0.0.1:514".to_string() }
+fn default_syslog_format() -> String { "cef".to_string() }
+fn default_syslog_min_level() -> String { "warning".to_string() }
+
+impl Default for SyslogExportConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            target: default_syslog_target(),
+            format: default_syslog_format(),
+            min_level: default_syslog_min_level(),
+        }
+    }
+}
+
+/// Webhook (JSON POST) export configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WebhookExportConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Webhook URL to POST alerts to
+    #[serde(default)]
+    pub url: String,
+    /// Authorization header value (e.g., "Bearer <token>")
+    #[serde(default)]
+    pub auth_header: String,
+    /// Number of alerts to batch before flushing
+    #[serde(default = "default_webhook_batch")]
+    pub batch_size: usize,
+    /// Maximum seconds between flushes
+    #[serde(default = "default_webhook_flush")]
+    pub flush_interval_secs: u64,
+}
+
+fn default_webhook_batch() -> usize { 10 }
+fn default_webhook_flush() -> u64 { 5 }
+
+impl Default for WebhookExportConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: String::new(),
+            auth_header: String::new(),
+            batch_size: default_webhook_batch(),
+            flush_interval_secs: default_webhook_flush(),
+        }
+    }
+}
+
+/// File export configuration (rotated JSON lines for Splunk forwarder / Fluentd).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FileExportConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Output file path
+    #[serde(default = "default_file_export_path")]
+    pub path: String,
+    /// Maximum file size in bytes before rotation
+    #[serde(default = "default_file_max_size")]
+    pub max_size_bytes: u64,
+    /// Number of rotated files to keep
+    #[serde(default = "default_file_keep")]
+    pub keep_rotated: u32,
+}
+
+fn default_file_export_path() -> String { "/var/log/clawtower/export.jsonl".to_string() }
+fn default_file_max_size() -> u64 { 50 * 1024 * 1024 } // 50 MB
+fn default_file_keep() -> u32 { 5 }
+
+impl Default for FileExportConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_file_export_path(),
+            max_size_bytes: default_file_max_size(),
+            keep_rotated: default_file_keep(),
+        }
+    }
+}
 
 /// CEF severity mapping (0-10 scale per ArcSight CEF spec).
 fn cef_severity(severity: &Severity) -> u8 {

@@ -120,6 +120,9 @@ fs.writeFileSync('$OUTDIR/17_harvest_n.json', JSON.stringify(harvest));
 
 # ── 7. File modification (sentinel Protected policy test) ────────────────────
 
+# Flush: wait for any lingering alerts from previous tests to settle
+sleep 5
+
 rl_run "echo >> device.json (sentinel tamper test)" \
   "echo '// tampered' >> '$DEVICE'"
 

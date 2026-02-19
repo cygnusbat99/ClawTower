@@ -10,6 +10,7 @@
 //! Default allowlist includes RFC1918 ranges, multicast, and common ports (443, 53, 123).
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::path::Path;
 use tokio::sync::mpsc;
@@ -18,6 +19,45 @@ use ipnet::IpNet;
 use crate::alerts::{Alert, Severity};
 use crate::safe_match::prefix_matches;
 use crate::safe_tail::SafeTailer;
+
+// ── Config types (moved from config.rs) ──────────────────────────────────────
+
+/// Network (iptables/netfilter) log monitoring configuration.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct NetworkConfig {
+    pub log_path: String,
+    pub log_prefix: String,
+    pub enabled: bool,
+    #[serde(default = "default_network_source")]
+    pub source: String,
+    /// CIDR ranges to never alert on
+    #[serde(default = "default_allowlisted_cidrs")]
+    pub allowlisted_cidrs: Vec<String>,
+    /// Extra ports to never alert on
+    #[serde(default = "default_allowlisted_ports")]
+    pub allowlisted_ports: Vec<u16>,
+}
+
+fn default_network_source() -> String {
+    "auto".to_string()
+}
+
+/// Default CIDR ranges that are never alerted on (RFC1918, multicast, loopback).
+pub fn default_allowlisted_cidrs() -> Vec<String> {
+    vec![
+        "192.168.0.0/16".to_string(),
+        "10.0.0.0/8".to_string(),
+        "172.16.0.0/12".to_string(),
+        "169.254.0.0/16".to_string(),
+        "127.0.0.0/8".to_string(),
+        "224.0.0.0/4".to_string(),
+    ]
+}
+
+/// Default ports that are never alerted on (HTTPS, DNS, NTP, mDNS).
+pub fn default_allowlisted_ports() -> Vec<u16> {
+    vec![443, 53, 123, 5353]
+}
 
 /// Parse an iptables log line
 pub fn parse_iptables_line(line: &str, prefix: &str) -> Option<Alert> {
@@ -52,8 +92,8 @@ fn extract_iptables_field<'a>(line: &'a str, field: &str) -> Option<&'a str> {
 fn is_known_good_destination(dst: &str, dpt: &str) -> bool {
     // Legacy fallback — uses default allowlist
     let allowlist = NetworkAllowlist::from_config(
-        &crate::config::default_allowlisted_cidrs(),
-        &crate::config::default_allowlisted_ports(),
+        &default_allowlisted_cidrs(),
+        &default_allowlisted_ports(),
     );
     allowlist.is_allowed(dst, dpt)
 }

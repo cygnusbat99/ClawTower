@@ -9,11 +9,11 @@
 //! is not yet running.
 
 use anyhow::Result;
-use std::path::Path;
-use tokio::sync::mpsc;
+use std::path::{Path, PathBuf};
+use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
 
-use crate::alerts::Alert;
+use crate::alerts::{Alert, Severity};
 use crate::safe_match::parse_log_severity;
 use crate::safe_tail::SafeTailer;
 
@@ -69,6 +69,43 @@ pub async fn tail_samhain_log(
     }
 
     Ok(())
+}
+
+/// Tail the Samhain log with live path switching via a watch channel.
+///
+/// Same pattern as `tail_falco_log_dynamic` but uses Samhain's 60s retry interval.
+pub async fn tail_samhain_log_dynamic(
+    tx: mpsc::Sender<Alert>,
+    mut path_rx: watch::Receiver<PathBuf>,
+) -> Result<()> {
+    loop {
+        let path = path_rx.borrow_and_update().clone();
+        let tailer = SafeTailer::new(&path)
+            .retry_interval(Duration::from_secs(60));
+        let mut rx = tailer.tail_lines(tx.clone(), "samhain").await;
+
+        loop {
+            tokio::select! {
+                line = rx.recv() => {
+                    match line {
+                        Some(line) => {
+                            if let Some(alert) = parse_samhain_line(&line) {
+                                let _ = tx.send(alert).await;
+                            }
+                        }
+                        None => break, // tailer died, restart with current path
+                    }
+                }
+                _ = path_rx.changed() => {
+                    let _ = tx.send(Alert::new(
+                        Severity::Info, "samhain",
+                        &format!("Log path changed to {}", path_rx.borrow().display()),
+                    )).await;
+                    break;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

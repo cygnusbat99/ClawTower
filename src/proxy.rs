@@ -11,17 +11,78 @@
 //! Matches can trigger blocking (SSN, AWS keys) or redaction (credit cards).
 
 use crate::alerts::{Alert, Severity};
-use crate::config::{KeyMapping, ProxyConfig, PromptFirewallConfig};
+use crate::config::PromptFirewallConfig;
 use crate::prompt_firewall::{PromptFirewall, FirewallResult};
 use anyhow::Result;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Client, Request, Response, Server, StatusCode, Uri};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+
+// ── Config types (moved from config.rs) ──────────────────────────────────────
+
+/// API key vault proxy configuration.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProxyConfig {
+    pub enabled: bool,
+    pub bind: String,
+    pub port: u16,
+    #[serde(default)]
+    pub key_mapping: Vec<KeyMapping>,
+    #[serde(default)]
+    pub dlp: DlpConfig,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: "127.0.0.1".to_string(),
+            port: 18790,
+            key_mapping: Vec::new(),
+            dlp: DlpConfig::default(),
+        }
+    }
+}
+
+/// Maps a virtual API key to a real key for a specific provider/upstream.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct KeyMapping {
+    #[serde(alias = "virtual")]
+    pub virtual_key: String,
+    pub real: String,
+    pub provider: String,
+    pub upstream: String,
+    /// Time-to-live in seconds. None = never expires.
+    #[serde(default)]
+    pub ttl_secs: Option<u64>,
+    /// Maximum allowed API paths (e.g., ["/v1/messages"]). Empty = all paths allowed.
+    #[serde(default)]
+    pub allowed_paths: Vec<String>,
+    /// Risk score threshold — auto-revoke if agent's risk exceeds this. 0 = disabled.
+    #[serde(default)]
+    pub revoke_at_risk: f64,
+}
+
+/// Data Loss Prevention pattern configuration for the proxy.
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct DlpConfig {
+    #[serde(default)]
+    pub patterns: Vec<DlpPattern>,
+}
+
+/// A single DLP regex pattern with a name and action (block or redact).
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct DlpPattern {
+    pub name: String,
+    pub regex: String,
+    pub action: String,
+}
 
 struct ProxyState {
     key_mappings: Vec<KeyMapping>,
@@ -418,7 +479,7 @@ async fn handle_request(
     let upstream_req = builder.body(Body::from(final_body)).unwrap();
 
     // Forward to upstream
-    let client = Client::builder().build(hyper_tls_connector());
+    let client = Client::builder().build(rustls_connector());
     match client.request(upstream_req).await {
         Ok(resp) => Ok(resp),
         Err(e) => Ok(Response::builder()
@@ -428,14 +489,17 @@ async fn handle_request(
     }
 }
 
-fn hyper_tls_connector() -> hyper_tls::HttpsConnector<hyper::client::HttpConnector> {
-    hyper_tls::HttpsConnector::new()
+fn rustls_connector() -> hyper_rustls::HttpsConnector<hyper::client::HttpConnector> {
+    hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .https_or_http()
+        .enable_http1()
+        .build()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::KeyMapping;
 
     fn test_mappings() -> Vec<KeyMapping> {
         vec![
@@ -595,7 +659,7 @@ mod tests {
     fn test_dlp_amex_15_digits_detected() {
         let patterns = test_dlp_patterns();
         // Amex 15-digit cards (3[47]xx) now detected by credit-card-amex pattern
-        match scan_dlp("Amex: 3782 8224 6310 005", &patterns) {
+        match scan_dlp("Amex: 3782 822463 10005", &patterns) {
             DlpResult::Pass { body, alerts } => {
                 assert!(body.contains("[REDACTED]"), "Amex card should be redacted");
                 let amex_alerts: Vec<_> = alerts.iter().filter(|a| a.0 == "credit-card-amex").collect();
@@ -898,8 +962,8 @@ mod tests {
 
     #[test]
     fn test_tls_connector_supports_https() {
-        let connector = hyper_tls_connector();
-        let _client: Client<hyper_tls::HttpsConnector<hyper::client::HttpConnector>> =
+        let connector = rustls_connector();
+        let _client: Client<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>> =
             Client::builder().build(connector);
     }
 }

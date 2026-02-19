@@ -9,8 +9,59 @@
 
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Local};
-use crate::config::CloudConfig;
 use crate::alerts::Alert;
+
+// ── Config types (moved from config.rs) ──────────────────────────────────────
+
+/// Cloud management plane uplink configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CloudConfig {
+    /// Enable cloud uplink
+    #[serde(default)]
+    pub enabled: bool,
+    /// Cloud management plane endpoint URL
+    #[serde(default = "default_cloud_endpoint")]
+    pub endpoint: String,
+    /// Path to agent Ed25519 private key for authentication
+    #[serde(default = "default_agent_key_path")]
+    pub agent_key_path: String,
+    /// Agent registration ID (auto-generated on first connect)
+    #[serde(default)]
+    pub agent_id: String,
+    /// Telemetry push interval in seconds
+    #[serde(default = "default_telemetry_interval")]
+    pub telemetry_interval: u64,
+    /// Whether to push alerts to cloud
+    #[serde(default = "default_true")]
+    pub push_alerts: bool,
+    /// Whether to pull policy updates from cloud
+    #[serde(default)]
+    pub pull_policies: bool,
+    /// Batch size for alert uploads
+    #[serde(default = "default_cloud_batch")]
+    pub batch_size: usize,
+}
+
+fn default_cloud_endpoint() -> String { "https://api.clawtower.io".to_string() }
+fn default_agent_key_path() -> String { "/etc/clawtower/agent-key.pem".to_string() }
+fn default_telemetry_interval() -> u64 { 60 }
+fn default_cloud_batch() -> usize { 50 }
+fn default_true() -> bool { true }
+
+impl Default for CloudConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: default_cloud_endpoint(),
+            agent_key_path: default_agent_key_path(),
+            agent_id: String::new(),
+            telemetry_interval: default_telemetry_interval(),
+            push_alerts: true,
+            pull_policies: false,
+            batch_size: default_cloud_batch(),
+        }
+    }
+}
 
 /// Registration payload sent to the cloud on first connect.
 #[allow(dead_code)]
@@ -212,7 +263,6 @@ impl CloudUplink {
 mod tests {
     use super::*;
     use crate::alerts::{Alert, Severity};
-    use crate::config::CloudConfig;
 
     fn test_config() -> CloudConfig {
         CloudConfig {

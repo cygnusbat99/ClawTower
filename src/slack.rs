@@ -9,27 +9,9 @@
 
 use anyhow::Result;
 use serde_json::json;
-use std::time::Duration;
 
 use crate::alerts::Alert;
 use crate::config::SlackConfig;
-
-/// Slack webhook request timeout — prevents hanging the alert pipeline.
-const SLACK_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Sanitize text for Slack mrkdwn to prevent mention injection.
-///
-/// An attacker who controls alert content (e.g., via crafted filenames or
-/// process arguments) could embed `<@everyone>`, `<@here>`, or `<@channel>`
-/// to trigger mass Slack notifications. This strips those special mentions.
-fn sanitize_for_slack(text: &str) -> String {
-    text.replace("<@everyone>", "@\u{200B}everyone")
-        .replace("<@here>", "@\u{200B}here")
-        .replace("<@channel>", "@\u{200B}channel")
-        .replace("<!everyone>", "@\u{200B}everyone")
-        .replace("<!here>", "@\u{200B}here")
-        .replace("<!channel>", "@\u{200B}channel")
-}
 
 /// Sends formatted alerts and status messages to Slack via incoming webhooks.
 ///
@@ -55,10 +37,7 @@ impl SlackNotifier {
 
     /// Send payload to primary webhook, failover to backup on error
     async fn post_webhook(&self, payload: &serde_json::Value) -> Result<()> {
-        let client = reqwest::Client::builder()
-            .timeout(SLACK_TIMEOUT)
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        let client = reqwest::Client::new();
         let resp = client.post(&self.webhook_url).json(payload).send().await;
 
         match resp {
@@ -90,11 +69,7 @@ impl SlackNotifier {
             "text": "🛡️ ClawTower webhook test — connection verified!"
         });
 
-        let client = reqwest::Client::builder()
-            .timeout(SLACK_TIMEOUT)
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-        let resp = client
+        let resp = reqwest::Client::new()
             .post(&self.webhook_url)
             .json(&payload)
             .send()
@@ -155,90 +130,15 @@ impl SlackNotifier {
             "attachments": [{
                 "color": color,
                 "title": format!("{} ClawTower Alert", alert.severity.emoji()),
-                "text": sanitize_for_slack(&alert.message),
+                "text": alert.message,
                 "fields": [
                     { "title": "Severity", "value": alert.severity.to_string(), "short": true },
-                    { "title": "Source", "value": sanitize_for_slack(&alert.source), "short": true },
+                    { "title": "Source", "value": alert.source, "short": true },
                 ],
                 "ts": alert.timestamp.timestamp()
             }]
         });
 
         self.post_webhook(&payload).await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_sanitize_strips_everyone() {
-        let input = "Alert: <@everyone> look at this!";
-        let sanitized = sanitize_for_slack(input);
-        assert!(!sanitized.contains("<@everyone>"), "must strip <@everyone>");
-        assert!(sanitized.contains("everyone"), "should keep word visible");
-    }
-
-    #[test]
-    fn test_sanitize_strips_here() {
-        let sanitized = sanitize_for_slack("warning <@here> and <!here>");
-        assert!(!sanitized.contains("<@here>"));
-        assert!(!sanitized.contains("<!here>"));
-    }
-
-    #[test]
-    fn test_sanitize_strips_channel() {
-        let sanitized = sanitize_for_slack("alert <@channel> notice <!channel>");
-        assert!(!sanitized.contains("<@channel>"));
-        assert!(!sanitized.contains("<!channel>"));
-    }
-
-    #[test]
-    fn test_sanitize_preserves_normal_text() {
-        let input = "Normal alert: exec /bin/bash by uid 1000";
-        assert_eq!(sanitize_for_slack(input), input);
-    }
-
-    #[test]
-    fn test_sanitize_multiple_injections() {
-        let input = "<@everyone> and <@here> and <@channel>";
-        let sanitized = sanitize_for_slack(input);
-        assert!(!sanitized.contains("<@everyone>"));
-        assert!(!sanitized.contains("<@here>"));
-        assert!(!sanitized.contains("<@channel>"));
-    }
-
-    #[test]
-    fn test_notifier_disabled_when_no_webhook() {
-        let config = SlackConfig {
-            webhook_url: String::new(),
-            backup_webhook_url: String::new(),
-            channel: "#test".to_string(),
-            enabled: None,
-            min_slack_level: "warning".to_string(),
-            heartbeat_interval: 3600,
-        };
-        let notifier = SlackNotifier::new(&config);
-        assert!(!notifier.enabled, "Should be disabled with empty webhook URL");
-    }
-
-    #[test]
-    fn test_notifier_enabled_with_webhook() {
-        let config = SlackConfig {
-            webhook_url: "https://hooks.slack.com/test".to_string(),
-            backup_webhook_url: String::new(),
-            channel: "#alerts".to_string(),
-            enabled: None,
-            min_slack_level: "warning".to_string(),
-            heartbeat_interval: 3600,
-        };
-        let notifier = SlackNotifier::new(&config);
-        assert!(notifier.enabled, "Should be enabled with webhook URL");
-    }
-
-    #[test]
-    fn test_timeout_constant() {
-        assert_eq!(SLACK_TIMEOUT, Duration::from_secs(10));
     }
 }

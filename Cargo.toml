@@ -1,6 +1,6 @@
 [package]
 name = "clawtower"
-version = "0.4.3-beta"
+version = "0.5.0-beta"
 edition = "2021"
 description = "Tamper-proof security watchdog for AI agents"
 license = "AGPL-3.0-or-later"
@@ -18,7 +18,7 @@ toml = "0.8"
 notify = "7"
 anyhow = "1"
 hyper = { version = "0.14", features = ["server", "client", "http1", "tcp"] }
-hyper-tls = "0.5"
+hyper-rustls = { version = "0.24", features = ["http1", "http2"] }
 sha2 = "0.10"
 hmac = "0.12"
 tracing = "0.1"

@@ -1,34 +1,242 @@
 {
-  "version": "1.0.0",
-  "description": "BarnacleDefense privacy rules — PII and credential detection patterns",
+  "version": "2.0.0",
+  "description": "BarnacleDefense privacy rules \u2014 comprehensive PII, credential, and secret detection patterns. All regexes are valid Rust regex crate syntax (no lookbehind/lookahead). Patterns are grouped by category via ID prefix.",
+  "coverage_notes": {
+    "credit_cards": "Visa, Mastercard, Amex, Discover, Diners Club, JCB, UnionPay, Maestro. Format-only detection; Luhn validation is not possible in regex.",
+    "government_ids": "US SSN, US EIN, US ITIN, US passport, UK NINO, Canadian SIN, Australian TFN, German Steuer-ID, French INSEE/NIRPP, Indian Aadhaar, Indian PAN, generic passport patterns.",
+    "healthcare": "US Medicare Beneficiary ID (MBI), DEA numbers, NPI numbers, MRN patterns, HL7 MSH segments, FHIR resource identifiers.",
+    "financial": "IBAN (international), SWIFT/BIC, US ABA routing numbers, Bitcoin (legacy + bech32), Ethereum addresses, generic bank account patterns.",
+    "cloud_tokens": "AWS (access key, secret key, session token), GCP (service account key fields, API key), Azure (client secret, SAS token, connection string), DigitalOcean, Heroku, Cloudflare, Twilio, SendGrid, Mailgun, Firebase.",
+    "cicd_devops": "GitHub (PAT, fine-grained, OAuth, app), GitLab (PAT, pipeline, runner, OAuth, SCIM), Bitbucket, CircleCI, npm, PyPI, NuGet, Terraform Cloud, HashiCorp Vault, Consul.",
+    "ai_ml_keys": "Anthropic, OpenAI (legacy sk- and project sk-proj-), Cohere, HuggingFace, Replicate.",
+    "payment_processors": "Stripe (secret, publishable, restricted), Square, Braintree, PayPal (client ID pattern).",
+    "messaging_communication": "Slack (webhook, bot xoxb, user xoxp, app xapp, legacy xoxo), Discord (bot token, webhook), Telegram bot token, Microsoft Teams webhook, Twilio auth token.",
+    "database_credentials": "PostgreSQL, MySQL, MongoDB, Redis, MSSQL, SQLite, JDBC connection strings with embedded credentials.",
+    "ssh_crypto": "PEM private keys (RSA, EC, DSA, OPENSSH, ENCRYPTED), PGP/GPG private key blocks, PKCS8, SSH private key file markers, JWT tokens.",
+    "password_secrets": "Password/secret/token assignments in config and env files, DATABASE_URL, MONGODB_URI, REDIS_URL with credentials, generic secret assignments, .env style secrets.",
+    "pii": "Email addresses, international phone numbers (E.164, US, UK, EU, with context keywords), IP addresses in PII-exfiltration context.",
+    "limitations": "Regex-only detection has inherent false-positive/negative tradeoffs. Credit card patterns match format only (no Luhn). Phone/email patterns require nearby PII keywords to reduce noise. Some patterns are deliberately broad (WARN) vs narrow (BLOCK)."
+  },
   "rules": [
     {
-      "id": "ssn_us",
-      "regex": "\\b\\d{3}-\\d{2}-\\d{4}\\b",
-      "severity": "critical",
-      "action": "BLOCK"
-    },
-    {
-      "id": "credit_card_visa",
+      "id": "cc_visa",
       "regex": "\\b4[0-9]{3}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}\\b",
       "severity": "critical",
       "action": "BLOCK"
     },
     {
-      "id": "credit_card_mastercard",
+      "id": "cc_mastercard",
       "regex": "\\b5[1-5][0-9]{2}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}\\b",
       "severity": "critical",
       "action": "BLOCK"
     },
     {
-      "id": "credit_card_amex",
+      "id": "cc_mastercard_2series",
+      "regex": "\\b2[2-7][0-9]{2}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "cc_amex",
       "regex": "\\b3[47][0-9]{2}[\\s-]?[0-9]{6}[\\s-]?[0-9]{5}\\b",
       "severity": "critical",
       "action": "BLOCK"
     },
     {
+      "id": "cc_discover",
+      "regex": "\\b6(?:011|5[0-9]{2}|4[4-9][0-9])[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "cc_diners_club",
+      "regex": "\\b3(?:0[0-5]|[68][0-9])[0-9][\\s-]?[0-9]{4}[\\s-]?[0-9]{4}[\\s-]?[0-9]{2}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "cc_jcb",
+      "regex": "\\b(?:2131|1800|35[0-9]{3})[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}[\\s-]?[0-9]{3,4}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "cc_unionpay",
+      "regex": "\\b62[0-9]{2}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4,7}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "cc_maestro",
+      "regex": "\\b(?:5018|5020|5038|5893|6304|6759|6761|6762|6763)[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}[\\s-]?[0-9]{0,7}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "us_ssn",
+      "regex": "\\b[0-9]{3}-[0-9]{2}-[0-9]{4}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "us_ssn_no_dashes",
+      "regex": "(?i)(?:ssn|social.security)\\s*[#:=]?\\s*[0-9]{9}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "us_ein",
+      "regex": "(?i)(?:ein|employer.id|tax.id)\\s*[#:=]?\\s*[0-9]{2}-[0-9]{7}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "us_itin",
+      "regex": "\\b9[0-9]{2}-[0-9]{2}-[0-9]{4}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "us_passport",
+      "regex": "(?i)(?:passport)\\s*(?:no|number|num|#)?\\s*[.:=]?\\s*[A-Z]?[0-9]{8,9}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "us_drivers_license",
+      "regex": "(?i)(?:driver'?s?.?\\s*licen[cs]e|DL)\\s*(?:no|number|num|#)?\\s*[.:=]?\\s*[A-Z][0-9]{4,14}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "uk_nino",
+      "regex": "(?i)\\b[A-CEGHJ-PR-TW-Z]{2}\\s?[0-9]{2}\\s?[0-9]{2}\\s?[0-9]{2}\\s?[A-D]\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "ca_sin",
+      "regex": "(?i)(?:sin|social.insurance)\\s*[#:=]?\\s*[0-9]{3}[\\s-][0-9]{3}[\\s-][0-9]{3}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "au_tfn",
+      "regex": "(?i)(?:tfn|tax.file.number)\\s*[#:=]?\\s*[0-9]{3}[\\s-]?[0-9]{3}[\\s-]?[0-9]{3}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "de_steuerid",
+      "regex": "(?i)(?:steuer[.-]?id|tax.?id.?de|tin.?de)\\s*[#:=]?\\s*[0-9]{11}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "fr_insee_nirpp",
+      "regex": "\\b[12][\\s-]?[0-9]{2}[\\s-]?(?:0[1-9]|1[0-2]|[2-9][0-9])[\\s-]?[0-9]{2,3}[\\s-]?[0-9]{3}[\\s-]?[0-9]{3}[\\s-]?[0-9]{2}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "in_aadhaar",
+      "regex": "(?i)(?:aadhaar|aadhar|uid)\\s*[#:=]?\\s*[2-9][0-9]{3}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "in_pan",
+      "regex": "\\b[A-Z]{3}[ABCFGHJLPT][A-Z][0-9]{4}[A-Z]\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "generic_passport",
+      "regex": "(?i)passport\\s*(?:no|number|num|#)?\\s*[.:=]?\\s*[A-Z]{1,2}[0-9]{6,9}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "us_medicare_mbi",
+      "regex": "\\b[1-9][A-Z](?:[0-9]|[A-Z])[0-9]-?[A-Z](?:[0-9]|[A-Z])[0-9]-?[A-Z]{2}[0-9]{2}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "us_dea_number",
+      "regex": "\\b[ABCDEFGHJKMNPRSTUabcdefghjkmnprstu][A-Za-z9][0-9]{7}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "us_npi",
+      "regex": "(?i)(?:npi|national.provider)\\s*[#:=]?\\s*[12][0-9]{9}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "medical_record_number",
+      "regex": "(?i)(?:mrn|medical.record|med.rec|patient.id|chart.no)\\s*[#:=]?\\s*[A-Z0-9]{4,20}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "hl7_msh_segment",
+      "regex": "MSH\\|\\^~\\\\&\\|",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "fhir_patient_resource",
+      "regex": "(?i)\"resourceType\"\\s*:\\s*\"Patient\"",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "iban",
+      "regex": "\\b[A-Z]{2}[0-9]{2}[\\s-]?[A-Z0-9]{4}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}[\\s-]?[0-9]{0,6}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "swift_bic",
+      "regex": "(?i)(?:swift|bic)\\s*[#:=]?\\s*[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "us_aba_routing",
+      "regex": "(?i)(?:routing|aba|rtn)\\s*(?:number|no|num|#)?\\s*[.:=]?\\s*[0-9]{9}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "bitcoin_address_legacy",
+      "regex": "\\b[13][a-km-zA-HJ-NP-Z1-9]{25,34}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "bitcoin_address_bech32",
+      "regex": "\\bbc1[a-zA-HJ-NP-Za-km-z0-9]{39,59}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "ethereum_address",
+      "regex": "\\b0x[0-9a-fA-F]{40}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "bank_account_with_context",
+      "regex": "(?i)(?:bank|acct|account)\\s*(?:number|no|num|#)?\\s*[.:=]?\\s*[0-9]{8,17}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
       "id": "aws_access_key",
-      "regex": "(?i)\\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\\b",
+      "regex": "\\b(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\\b",
       "severity": "critical",
       "action": "BLOCK"
     },
@@ -39,22 +247,526 @@
       "action": "BLOCK"
     },
     {
-      "id": "github_token",
-      "regex": "\\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,255}\\b",
+      "id": "aws_session_token",
+      "regex": "(?i)aws_session_token\\s*[=:]\\s*[A-Za-z0-9/+=]{100,}",
       "severity": "critical",
       "action": "BLOCK"
     },
     {
-      "id": "generic_api_key",
-      "regex": "(?i)(api[_-]?key|apikey|api[_-]?secret)\\s*[=:]\\s*['\"]?[A-Za-z0-9_\\-]{20,}",
+      "id": "aws_mws_key",
+      "regex": "(?i)amzn\\.mws\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "gcp_service_account_private_key_id",
+      "regex": "(?i)\"private_key_id\"\\s*:\\s*\"[a-f0-9]{40}\"",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "gcp_service_account_private_key",
+      "regex": "(?i)\"private_key\"\\s*:\\s*\"-----BEGIN",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "gcp_api_key",
+      "regex": "\\bAIza[0-9A-Za-z_-]{35}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "gcp_oauth_client_secret",
+      "regex": "(?i)\"client_secret\"\\s*:\\s*\"[A-Za-z0-9_-]{24,}\"",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "azure_client_secret",
+      "regex": "(?i)(?:azure|client)[_-]?secret\\s*[=:]\\s*['\"]?[A-Za-z0-9~._-]{34,}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "azure_sas_token",
+      "regex": "(?i)[?&]sig=[A-Za-z0-9%+/=]{43,}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "azure_connection_string",
+      "regex": "(?i)(?:DefaultEndpointsProtocol|AccountName|AccountKey|EndpointSuffix)=[^;\\s]{1,}(?:;(?:DefaultEndpointsProtocol|AccountName|AccountKey|EndpointSuffix)=[^;\\s]+){2,}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "azure_ad_client_id",
+      "regex": "(?i)(?:AZURE_CLIENT_ID|AZURE_TENANT_ID)\\s*[=:]\\s*['\"]?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "digitalocean_token",
+      "regex": "(?i)(?:do_|digitalocean)\\s*(?:token|key|pat)\\s*[=:]\\s*['\"]?(?:dop_v1_)?[a-f0-9]{64}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "digitalocean_oauth",
+      "regex": "\\bdop_v1_[a-f0-9]{64}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "heroku_api_key",
+      "regex": "(?i)heroku\\s*(?:api)?\\s*(?:key|token)\\s*[=:]\\s*['\"]?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "cloudflare_api_key",
+      "regex": "(?i)(?:cloudflare|cf)[_-]?(?:api)?[_-]?key\\s*[=:]\\s*['\"]?[a-f0-9]{37}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "cloudflare_api_token",
+      "regex": "(?i)(?:cloudflare|cf)[_-]?(?:api)?[_-]?token\\s*[=:]\\s*['\"]?[A-Za-z0-9_-]{40}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "twilio_account_sid",
+      "regex": "\\bAC[a-f0-9]{32}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "twilio_auth_token",
+      "regex": "(?i)(?:twilio)\\s*(?:auth)?\\s*token\\s*[=:]\\s*['\"]?[a-f0-9]{32}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "sendgrid_api_key",
+      "regex": "\\bSG\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]{43}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "mailgun_api_key",
+      "regex": "(?i)(?:mailgun)\\s*(?:api)?\\s*key\\s*[=:]\\s*['\"]?key-[a-f0-9]{32}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "mailgun_key_bare",
+      "regex": "\\bkey-[a-f0-9]{32}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "firebase_key",
+      "regex": "(?i)(?:firebase|FIREBASE_API_KEY)\\s*[=:]\\s*['\"]?AIza[0-9A-Za-z_-]{35}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "anthropic_api_key",
+      "regex": "\\bsk-ant-[A-Za-z0-9_-]{40,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "openai_api_key_legacy",
+      "regex": "\\bsk-[A-Za-z0-9]{48,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "openai_api_key_project",
+      "regex": "\\bsk-proj-[A-Za-z0-9_-]{40,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "cohere_api_key",
+      "regex": "(?i)(?:cohere|co_api)\\s*(?:api)?\\s*key\\s*[=:]\\s*['\"]?[A-Za-z0-9]{40}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "huggingface_token",
+      "regex": "\\bhf_[A-Za-z0-9]{34,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "replicate_api_token",
+      "regex": "\\br8_[A-Za-z0-9]{37,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "stripe_secret_key",
+      "regex": "\\bsk_(test|live)_[A-Za-z0-9]{24,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "stripe_publishable_key",
+      "regex": "\\bpk_(test|live)_[A-Za-z0-9]{24,}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "stripe_restricted_key",
+      "regex": "\\brk_(test|live)_[A-Za-z0-9]{24,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "square_access_token",
+      "regex": "\\bsq0atp-[A-Za-z0-9_-]{22,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "square_oauth_secret",
+      "regex": "\\bsq0csp-[A-Za-z0-9_-]{43,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "braintree_access_token",
+      "regex": "(?i)access_token\\$(?:production|sandbox)\\$[a-z0-9]{16}\\$[a-f0-9]{32}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "paypal_client_id",
+      "regex": "(?i)(?:paypal)\\s*(?:client)?\\s*(?:id|key)\\s*[=:]\\s*['\"]?A[A-Za-z0-9_-]{60,}",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "github_pat_classic",
+      "regex": "\\bghp_[A-Za-z0-9_]{36,255}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "github_pat_fine_grained",
+      "regex": "\\bgithub_pat_[A-Za-z0-9_]{22,255}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "github_oauth",
+      "regex": "\\bgho_[A-Za-z0-9_]{36,255}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "github_user_to_server",
+      "regex": "\\bghu_[A-Za-z0-9_]{36,255}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "github_server_to_server",
+      "regex": "\\bghs_[A-Za-z0-9_]{36,255}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "github_refresh_token",
+      "regex": "\\bghr_[A-Za-z0-9_]{36,255}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "gitlab_pat",
+      "regex": "\\bglpat-[A-Za-z0-9_-]{20,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "gitlab_pipeline_trigger",
+      "regex": "\\bglptt-[A-Za-z0-9_-]{20,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "gitlab_runner_token",
+      "regex": "\\bglrt-[A-Za-z0-9_-]{20,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "gitlab_oauth_app",
+      "regex": "\\bgloas-[A-Za-z0-9_-]{20,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "gitlab_scim",
+      "regex": "\\bglsoat-[A-Za-z0-9_-]{20,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "gitlab_ci_job_token",
+      "regex": "(?i)CI_JOB_TOKEN\\s*[=:]\\s*['\"]?[A-Za-z0-9_-]{20,}",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "bitbucket_app_password",
+      "regex": "(?i)(?:bitbucket)\\s*(?:app)?\\s*(?:password|token|key)\\s*[=:]\\s*['\"]?[A-Za-z0-9]{18,}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "circleci_token",
+      "regex": "(?i)(?:circle_?ci|CIRCLECI)\\s*(?:token|key)\\s*[=:]\\s*['\"]?[a-f0-9]{40}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "npm_token",
+      "regex": "\\bnpm_[A-Za-z0-9]{36}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "npm_token_legacy",
+      "regex": "(?i)//registry\\.npmjs\\.org/:_authToken=[A-Za-z0-9-]{36}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "pypi_token",
+      "regex": "\\bpypi-[A-Za-z0-9_-]{50,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "nuget_api_key",
+      "regex": "(?i)(?:nuget)\\s*(?:api)?\\s*key\\s*[=:]\\s*['\"]?oy2[a-z0-9]{43}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "terraform_cloud_token",
+      "regex": "(?i)(?:TFE_TOKEN|TERRAFORM_TOKEN|TFC_TOKEN)\\s*[=:]\\s*['\"]?[A-Za-z0-9.]{14,}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "terraform_cloud_token_atlas",
+      "regex": "\\b[A-Za-z0-9]{14}\\.[A-Za-z]{14}\\.[A-Za-z0-9-_]{67}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "hashicorp_vault_token",
+      "regex": "\\b(?:hvs|hvb|hvp)\\.[A-Za-z0-9_-]{24,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "hashicorp_vault_token_legacy",
+      "regex": "(?i)(?:VAULT_TOKEN|vault_token)\\s*[=:]\\s*['\"]?s\\.[A-Za-z0-9]{24}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "consul_token",
+      "regex": "(?i)(?:CONSUL_HTTP_TOKEN|consul_token)\\s*[=:]\\s*['\"]?[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "docker_hub_token",
+      "regex": "(?i)(?:DOCKER_HUB_TOKEN|DOCKER_PASSWORD|DOCKER_TOKEN)\\s*[=:]\\s*['\"]?[A-Za-z0-9_-]{36,}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "jenkins_api_token",
+      "regex": "(?i)(?:JENKINS_TOKEN|JENKINS_API_TOKEN)\\s*[=:]\\s*['\"]?[a-f0-9]{32,}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "travis_ci_token",
+      "regex": "(?i)(?:TRAVIS_TOKEN|travis_token)\\s*[=:]\\s*['\"]?[A-Za-z0-9_-]{22,}",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "slack_webhook",
+      "regex": "https://hooks\\.slack\\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "slack_bot_token",
+      "regex": "\\bxoxb-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "slack_user_token",
+      "regex": "\\bxoxp-[0-9]{10,13}-[0-9]{10,13}-[0-9]{10,13}-[a-f0-9]{32}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "slack_app_token",
+      "regex": "\\bxapp-[0-9]-[A-Z0-9]{10,}-[0-9]+-[a-z0-9]{64}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "slack_legacy_token",
+      "regex": "\\bxoxo-[0-9]{10,}-[A-Za-z0-9]+\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "slack_config_token",
+      "regex": "\\bxoxe\\.xoxp-1-[A-Za-z0-9-]{160,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "discord_bot_token",
+      "regex": "\\b[MN][A-Za-z0-9]{23,}\\.[A-Za-z0-9_-]{6}\\.[A-Za-z0-9_-]{27,}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "discord_webhook",
+      "regex": "https://(?:ptb\\.|canary\\.)?discord(?:app)?\\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "telegram_bot_token",
+      "regex": "\\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\\b",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "teams_webhook",
+      "regex": "https://[a-z0-9-]+\\.webhook\\.office\\.com/webhookb2/[A-Za-z0-9@-]+/IncomingWebhook/[A-Za-z0-9]+/[A-Za-z0-9-]+",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "postgres_connection_string",
+      "regex": "(?i)postgres(?:ql)?://[^\\s:]+:[^\\s@]+@[^\\s]+",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "mysql_connection_string",
+      "regex": "(?i)mysql://[^\\s:]+:[^\\s@]+@[^\\s]+",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "mongodb_connection_string",
+      "regex": "(?i)mongodb(?:\\+srv)?://[^\\s:]+:[^\\s@]+@[^\\s]+",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "redis_connection_string",
+      "regex": "(?i)redis(?:s)?://[^\\s:]*:[^\\s@]+@[^\\s]+",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "mssql_connection_string",
+      "regex": "(?i)(?:Server|Data Source)=[^;]+;.*(?:Password|Pwd)=[^;\\s]+",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "jdbc_connection_string",
+      "regex": "(?i)jdbc:[a-z]+://[^\\s]+(?:password|pwd)=[^\\s&;]+",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "database_url_env",
+      "regex": "(?i)DATABASE_URL\\s*[=:]\\s*['\"]?[a-z]+://[^\\s]+",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "mongodb_uri_env",
+      "regex": "(?i)MONGODB_URI\\s*[=:]\\s*['\"]?mongodb",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "redis_url_env",
+      "regex": "(?i)REDIS_URL\\s*[=:]\\s*['\"]?redis",
       "severity": "high",
       "action": "WARN"
     },
     {
       "id": "private_key_pem",
-      "regex": "-----BEGIN\\s+(RSA|EC|DSA|OPENSSH)?\\s*PRIVATE\\s+KEY-----",
+      "regex": "-----BEGIN\\s+(?:RSA|EC|DSA|OPENSSH|ENCRYPTED)?\\s*PRIVATE\\s+KEY-----",
       "severity": "critical",
       "action": "BLOCK"
+    },
+    {
+      "id": "private_key_pkcs8",
+      "regex": "-----BEGIN\\s+PRIVATE\\s+KEY-----",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "pgp_private_key_block",
+      "regex": "-----BEGIN\\s+PGP\\s+PRIVATE\\s+KEY\\s+BLOCK-----",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "ssh_private_key_openssh",
+      "regex": "-----BEGIN\\s+OPENSSH\\s+PRIVATE\\s+KEY-----",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "ssh_private_key_file_marker",
+      "regex": "(?i)(?:id_rsa|id_ecdsa|id_ed25519|id_dsa)\\s*[=:]\\s*['\"]?/",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "pkcs12_pfx_content",
+      "regex": "-----BEGIN\\s+(?:PKCS12|CERTIFICATE AND PRIVATE KEY)-----",
+      "severity": "critical",
+      "action": "BLOCK"
+    },
+    {
+      "id": "jwt_token",
+      "regex": "\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "x509_certificate_key",
+      "regex": "-----BEGIN\\s+CERTIFICATE-----",
+      "severity": "medium",
+      "action": "WARN"
     },
     {
       "id": "password_in_url",
@@ -63,28 +775,94 @@
       "action": "WARN"
     },
     {
-      "id": "slack_webhook",
-      "regex": "https://hooks\\.slack\\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+",
+      "id": "password_assignment",
+      "regex": "(?i)(?:password|passwd|pwd)\\s*[=:]\\s*['\"]?[^\\s'\"]{8,}",
       "severity": "high",
       "action": "WARN"
     },
     {
-      "id": "anthropic_api_key",
-      "regex": "\\bsk-ant-[A-Za-z0-9_\\-]{40,}\\b",
+      "id": "secret_assignment",
+      "regex": "(?i)(?:secret|secret_key|client_secret|app_secret)\\s*[=:]\\s*['\"]?[A-Za-z0-9_/+=-]{16,}",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "token_assignment",
+      "regex": "(?i)(?:auth_token|access_token|bearer_token|refresh_token|api_token)\\s*[=:]\\s*['\"]?[A-Za-z0-9_/+.=-]{16,}",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "generic_api_key",
+      "regex": "(?i)(?:api[_-]?key|apikey|api[_-]?secret)\\s*[=:]\\s*['\"]?[A-Za-z0-9_-]{20,}",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "bearer_token_header",
+      "regex": "(?i)(?:Authorization|Bearer)\\s*[=:]?\\s*Bearer\\s+[A-Za-z0-9_/+.=-]{20,}",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "env_secret_generic",
+      "regex": "(?i)(?:SECRET|TOKEN|CREDENTIAL|AUTH)\\s*[=:]\\s*['\"]?[A-Za-z0-9_/+.=-]{20,}",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "dotenv_private_key",
+      "regex": "(?i)PRIVATE_KEY\\s*[=:]\\s*['\"]?[A-Za-z0-9_/+=-]{20,}",
       "severity": "critical",
       "action": "BLOCK"
     },
     {
-      "id": "openai_api_key",
-      "regex": "\\bsk-[A-Za-z0-9]{48,}\\b",
-      "severity": "critical",
-      "action": "BLOCK"
+      "id": "email_in_pii_context",
+      "regex": "(?i)(?:email|e-mail|mailto|contact|user)\\s*[=:@]?\\s*[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
+      "severity": "high",
+      "action": "WARN"
     },
     {
-      "id": "stripe_key",
-      "regex": "\\b(sk|pk)_(test|live)_[A-Za-z0-9]{24,}\\b",
-      "severity": "critical",
-      "action": "BLOCK"
+      "id": "phone_e164",
+      "regex": "(?i)(?:phone|mobile|cell|tel|fax|contact)\\s*[#:=]?\\s*\\+[1-9][0-9]{6,14}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "phone_us_format",
+      "regex": "(?i)(?:phone|mobile|cell|tel|fax|contact)\\s*[#:=]?\\s*(?:\\+?1[\\s.-]?)?\\(?[0-9]{3}\\)?[\\s.-]?[0-9]{3}[\\s.-]?[0-9]{4}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "phone_uk_format",
+      "regex": "(?i)(?:phone|mobile|cell|tel|fax|contact)\\s*[#:=]?\\s*\\+?44[\\s.-]?[0-9]{4}[\\s.-]?[0-9]{6}\\b",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "dob_with_context",
+      "regex": "(?i)(?:date.of.birth|dob|birth.?date|born)\\s*[#:=]?\\s*(?:[0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{2,4}|[0-9]{4}[/-][0-9]{1,2}[/-][0-9]{1,2})",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "ip_in_pii_context",
+      "regex": "(?i)(?:ip.?address|client.?ip|remote.?addr|user.?ip|source.?ip)\\s*[#:=]?\\s*[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "physical_address_with_context",
+      "regex": "(?i)(?:address|street|residence|home.?address|mailing)\\s*[#:=]?\\s*[0-9]{1,5}\\s+[A-Za-z]+\\s+(?:St|Ave|Rd|Blvd|Dr|Ct|Ln|Way|Pl|Cir)",
+      "severity": "high",
+      "action": "WARN"
+    },
+    {
+      "id": "gps_coordinates",
+      "regex": "(?i)(?:gps|coordinates|location|lat.?long|geo)\\s*[#:=]?\\s*-?[0-9]{1,3}\\.[0-9]{4,}\\s*,\\s*-?[0-9]{1,3}\\.[0-9]{4,}",
+      "severity": "high",
+      "action": "WARN"
     }
   ]
 }

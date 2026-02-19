@@ -37,7 +37,7 @@ curl -H "Authorization: Bearer $CLAWTOWER_API_TOKEN" http://localhost:18791/api/
 {
   "status": "running",
   "uptime_seconds": 3600,
-  "version": "0.4.3-beta",
+  "version": "0.5.0-beta",
   "parity": {
     "mismatches_total": 0,
     "alerts_emitted": 0,
@@ -128,7 +128,7 @@ curl http://localhost:18791/api/health
 {
   "healthy": true,
   "uptime_seconds": 3600,
-  "version": "0.4.3-beta",
+  "version": "0.5.0-beta",
   "last_alert_age_seconds": 45
 }
 ```

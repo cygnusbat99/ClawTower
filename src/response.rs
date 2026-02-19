@@ -13,13 +13,89 @@
 //! Critical alerts always require human approval. Warning behavior is configurable.
 
 use crate::alerts::{Alert, Severity};
-use crate::config::ResponseConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, oneshot};
+
+// ── Config types (moved from config.rs) ──────────────────────────────────────
+
+/// Configuration for the response engine — automated threat containment with human approval.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResponseConfig {
+    /// Enable the response engine.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Default timeout for human approval in seconds (default: 120 = 2 minutes).
+    #[serde(default = "default_response_timeout")]
+    pub timeout_secs: u64,
+
+    /// What to do with Warning-level alerts. Options: "gate", "alert_only", "auto_deny".
+    /// Critical alerts always use "gate" regardless of this setting.
+    #[serde(default = "default_warning_mode")]
+    pub warning_mode: String,
+
+    /// Directory containing response playbook YAML files.
+    #[serde(default = "default_playbook_dir")]
+    pub playbook_dir: String,
+
+    /// Message returned to agent when an action is denied.
+    #[serde(default = "default_deny_message")]
+    pub deny_message: String,
+}
+
+fn default_response_timeout() -> u64 { 120 }
+fn default_warning_mode() -> String { "gate".to_string() }
+fn default_playbook_dir() -> String { "/etc/clawtower/playbooks".to_string() }
+fn default_deny_message() -> String {
+    "Action blocked by ClawTower security policy. Contact administrator.".to_string()
+}
+
+impl Default for ResponseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_secs: default_response_timeout(),
+            warning_mode: default_warning_mode(),
+            playbook_dir: default_playbook_dir(),
+            deny_message: default_deny_message(),
+        }
+    }
+}
+
+/// Incident mode configuration - deterministic containment on toggle.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IncidentModeConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_incident_dedup")]
+    pub dedup_window_secs: u64,
+    #[serde(default = "default_incident_scan_dedup")]
+    pub scan_dedup_window_secs: u64,
+    #[serde(default = "default_incident_rate_limit")]
+    pub rate_limit_per_source: u32,
+    #[serde(default)]
+    pub lock_clawsudo: bool,
+}
+
+fn default_incident_dedup() -> u64 { 2 }
+fn default_incident_scan_dedup() -> u64 { 60 }
+fn default_incident_rate_limit() -> u32 { 200 }
+
+impl Default for IncidentModeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dedup_window_secs: default_incident_dedup(),
+            scan_dedup_window_secs: default_incident_scan_dedup(),
+            rate_limit_per_source: default_incident_rate_limit(),
+            lock_clawsudo: false,
+        }
+    }
+}
 
 // ── Core Types ───────────────────────────────────────────────────────────────
 

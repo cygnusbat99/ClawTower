@@ -32,28 +32,51 @@ for arg in "$@"; do
     esac
 done
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-log()  { echo -e "${GREEN}[SETUP]${NC} $*"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
-info() { echo -e "${CYAN}[INFO]${NC} $*"; }
-die()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
-
-echo ""
-echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║                🛡️  ClawTower Setup                             ║${NC}"
-echo -e "${CYAN}║                                                              ║${NC}"
-if $BUILD_FROM_SOURCE; then
-echo -e "${CYAN}║  Mode: BUILD FROM SOURCE                                     ║${NC}"
+# ── Terminal UI ──────────────────────────────────────────────────────────────
+if [[ -t 1 ]] || [[ -t 2 ]] || [[ -n "${FORCE_COLOR:-}" ]]; then
+    RED='\033[38;5;167m'
+    GREEN='\033[38;5;108m'
+    AMBER='\033[38;5;179m'
+    YELLOW='\033[38;5;179m'
+    CYAN='\033[38;5;109m'
+    DIM='\033[2m'
+    BOLD='\033[1m'
+    NC='\033[0m'
 else
-echo -e "${CYAN}║  Mode: INSTALL PRE-BUILT BINARIES                            ║${NC}"
+    RED='' GREEN='' AMBER='' YELLOW='' CYAN='' DIM='' BOLD='' NC=''
 fi
-echo -e "${CYAN}║  Reversible — use 'clawtower uninstall' to remove.              ║${NC}"
-echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
+
+TERM_WIDTH=$(tput cols 2>/dev/null || echo 72)
+[[ "$TERM_WIDTH" -gt 80 ]] && TERM_WIDTH=80
+
+log()  { echo -e "  ${GREEN}✓${NC} $*"; }
+warn() { echo -e "  ${AMBER}▲${NC} $*"; }
+info() { echo -e "  ${DIM}·${NC} ${DIM}$*${NC}"; }
+die()  { echo -e "\n  ${RED}✗ $*${NC}\n" >&2; exit 1; }
+
+header() {
+    local title="$1" subtitle="${2:-}"
+    local line
+    line=$(printf '─%.0s' $(seq 1 $((TERM_WIDTH - 6))))
+    echo ""
+    printf "  ${AMBER}╭─${NC} ${BOLD}%s${NC}\n" "$title"
+    [[ -n "$subtitle" ]] && printf "  ${AMBER}│${NC}  ${DIM}%s${NC}\n" "$subtitle"
+    echo -e "  ${AMBER}╰${line}${NC}"
+    echo ""
+}
+
+sep() {
+    local line
+    line=$(printf '─%.0s' $(seq 1 $((TERM_WIDTH - 4))))
+    echo -e "  ${DIM}${line}${NC}"
+}
+
+if $BUILD_FROM_SOURCE; then
+    header "ClawTower Setup" "Mode: build from source"
+else
+    header "ClawTower Setup" "Mode: install pre-built binaries"
+fi
+echo -e "  ${DIM}Reversible — use 'clawtower uninstall' to remove.${NC}"
 echo ""
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
@@ -230,30 +253,24 @@ fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
-echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  ✅ ClawTower setup complete!                                  ║${NC}"
-echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
-echo -e "${GREEN}║                                                              ║${NC}"
-echo -e "${GREEN}║  Commands:                                                   ║${NC}"
-echo -e "${GREEN}║    clawtower help             Show all commands                ║${NC}"
-echo -e "${GREEN}║    clawtower configure        Set up Slack, users, modules     ║${NC}"
-echo -e "${GREEN}║    clawtower scan             Quick security scan              ║${NC}"
-echo -e "${GREEN}║    clawtower status           Service status + alerts          ║${NC}"
-echo -e "${GREEN}║    clawtower tui              Interactive dashboard            ║${NC}"
-echo -e "${GREEN}║    clawtower logs             Tail live logs                   ║${NC}"
-echo -e "${GREEN}║                                                              ║${NC}"
-echo -e "${GREEN}║  Service:                                                    ║${NC}"
-echo -e "${GREEN}║    sudo systemctl start clawtower     Start                    ║${NC}"
-echo -e "${GREEN}║    sudo systemctl stop clawtower      Stop                     ║${NC}"
-echo -e "${GREEN}║                                                              ║${NC}"
-echo -e "${GREEN}║  Next:                                                       ║${NC}"
-echo -e "${GREEN}║    1. clawtower configure              Set your Slack webhook  ║${NC}"
-echo -e "${GREEN}║    2. sudo systemctl start clawtower   Start monitoring        ║${NC}"
-echo -e "${GREEN}║    3. clawtower scan                   Verify security posture ║${NC}"
-echo -e "${GREEN}║                                                              ║${NC}"
-echo -e "${GREEN}║  Optional:                                                   ║${NC}"
-echo -e "${GREEN}║    clawtower harden           Lock down (admin key required)   ║${NC}"
-echo -e "${GREEN}║    clawtower uninstall        Remove (admin key required)      ║${NC}"
-echo -e "${GREEN}║                                                              ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
+header "ClawTower setup complete"
+
+echo -e "  ${BOLD}Commands${NC}"
+echo -e "    ${DIM}clawtower help${NC}             Show all commands"
+echo -e "    ${DIM}clawtower configure${NC}        Set up Slack, users, modules"
+echo -e "    ${DIM}clawtower scan${NC}             Quick security scan"
+echo -e "    ${DIM}clawtower status${NC}           Service status + alerts"
+echo -e "    ${DIM}clawtower tui${NC}              Interactive dashboard"
+echo -e "    ${DIM}clawtower logs${NC}             Tail live logs"
+echo ""
+sep
+echo ""
+echo -e "  ${BOLD}Next steps${NC}"
+echo -e "    ${DIM}1.${NC} clawtower configure              ${DIM}Set your Slack webhook${NC}"
+echo -e "    ${DIM}2.${NC} sudo systemctl start clawtower   ${DIM}Start monitoring${NC}"
+echo -e "    ${DIM}3.${NC} clawtower scan                   ${DIM}Verify security posture${NC}"
+echo ""
+echo -e "  ${BOLD}Optional${NC}"
+echo -e "    ${DIM}clawtower harden${NC}           Lock down ${DIM}(admin key required)${NC}"
+echo -e "    ${DIM}clawtower uninstall${NC}        Remove ${DIM}(admin key required)${NC}"
 echo ""
