@@ -90,6 +90,13 @@ impl AuditChain {
                     }
                 }
             }
+            // Verify chain integrity on resume
+            if last_seq > 0 {
+                if let Err(e) = Self::verify(&path) {
+                    bail!("Audit chain integrity check failed on resume: {}. Run `clawtower verify-audit` for details.", e);
+                }
+            }
+
             (last_seq, last_hash)
         } else {
             (0, GENESIS_HASH.to_string())
@@ -404,6 +411,32 @@ mod tests {
     fn test_verify_nonexistent_file() {
         let result = AuditChain::verify(Path::new("/nonexistent/chain.log"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resume_detects_corrupted_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.chain");
+
+        // Write valid chain
+        {
+            let mut chain = AuditChain::new(&path).unwrap();
+            for i in 0..3 {
+                chain.append(&test_alert(Severity::Info, "test", &format!("msg {}", i))).unwrap();
+            }
+        }
+
+        // Corrupt middle entry
+        let content = std::fs::read_to_string(&path).unwrap();
+        let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+        let mut entry: AuditEntry = serde_json::from_str(&lines[1]).unwrap();
+        entry.message = "TAMPERED".to_string();
+        lines[1] = serde_json::to_string(&entry).unwrap();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        // Resume should detect corruption
+        let result = AuditChain::new(&path);
+        assert!(result.is_err(), "Resuming from corrupted chain must fail");
     }
 
     #[test]
