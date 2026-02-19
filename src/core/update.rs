@@ -413,7 +413,9 @@ pub fn is_newer_version(current: &str, remote: &str) -> bool {
         return false;
     }
     let parse = |s: &str| -> Vec<u64> {
-        s.split('.').filter_map(|p| p.parse().ok()).collect()
+        // Strip pre-release suffix (e.g., "0.5.3-beta" → "0.5.3")
+        let base = s.split('-').next().unwrap_or(s);
+        base.split('.').filter_map(|p| p.parse().ok()).collect()
     };
     let c = parse(current);
     let r = parse(remote);
@@ -600,6 +602,10 @@ mod tests {
         assert!(!is_newer_version("0.2.0", "0.2.0"));
         assert!(!is_newer_version("v0.2.8", "v0.2.8"));
         assert!(is_newer_version("0.9.9", "1.0.0"));
+        // Pre-release suffixes must not break comparison
+        assert!(is_newer_version("0.5.1-beta", "0.5.3-beta"));
+        assert!(!is_newer_version("0.5.3-beta", "0.5.1-beta"));
+        assert!(!is_newer_version("0.5.3-beta", "0.5.3-beta"));
     }
 
     #[test]

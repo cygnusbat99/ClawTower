@@ -261,6 +261,7 @@ impl Correlator {
     }
 
     /// Evaluate whether the threat score warrants a state transition.
+    #[allow(unused_variables)]
     fn evaluate_state_transition(&mut self) {
         let score = self.threat_score;
         let now_name = self.state.name();
