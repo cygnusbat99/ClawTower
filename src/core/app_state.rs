@@ -13,12 +13,12 @@ use tokio::sync::mpsc;
 
 use super::alerts::{Alert, Severity};
 use super::response::{self, SharedPendingActions};
-use crate::api;
+use crate::interface::api;
 use crate::config::Config;
 use crate::detect::barnacle;
 use crate::detect::policy;
 use crate::scanner;
-use crate::slack::SlackNotifier;
+use crate::interface::slack::SlackNotifier;
 
 /// Channel receivers consumed by the aggregator, TUI, and Slack forwarder.
 /// These are separated from AppState because each receiver can only be consumed once.

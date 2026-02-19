@@ -15,19 +15,17 @@ mod agent;
 mod cli;
 mod detect;
 mod enforcement;
-mod api;
 mod behavior;
 mod compliance;
 mod config;
+mod interface;
 mod sentinel;
 mod netpolicy;
 mod proxy;
 mod safe;
 mod scanner;
 mod sources;
-mod slack;
 mod tui;
-mod tui_client;
 
 #[cfg(test)]
 mod integration_tests;
@@ -102,9 +100,9 @@ async fn async_main() -> Result<()> {
     // ── TUI client mode: connect to running service if reachable ─────────
     if !headless {
         let connect_addr = if config.api.bind == "0.0.0.0" { "127.0.0.1" } else { &config.api.bind };
-        if tui_client::service_api_reachable(connect_addr, config.api.port).await {
+        if interface::tui_client::service_api_reachable(connect_addr, config.api.port).await {
             eprintln!("ClawTower service detected. Starting TUI in client mode...");
-            return tui_client::run_client_tui(&config, config_path).await;
+            return interface::tui_client::run_client_tui(&config, config_path).await;
         }
 
         // Service API not reachable — stop service and run full watchdog

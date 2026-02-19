@@ -175,7 +175,7 @@ pub async fn run_aggregator(
     slack_tx: mpsc::Sender<Alert>,
     config: AggregatorConfig,
     min_slack_severity: super::alerts::Severity,
-    api_store: crate::api::SharedAlertStore,
+    api_store: crate::interface::api::SharedAlertStore,
 ) {
     let mut aggregator = Aggregator::new(config);
     let mut cleanup_counter: u32 = 0;

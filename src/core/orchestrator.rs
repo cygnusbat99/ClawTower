@@ -16,8 +16,9 @@ use super::alerts::{Alert, Severity};
 use super::app_state::{AlertReceivers, AppState};
 use super::response::ResponseRequest;
 use super::{admin, aggregator, response, update};
-use crate::slack::SlackNotifier;
-use crate::{api, netpolicy, proxy, scanner, sentinel, tui};
+use crate::interface::slack::SlackNotifier;
+use crate::interface::api;
+use crate::{netpolicy, proxy, scanner, sentinel, tui};
 use crate::detect::barnacle;
 use crate::sources::{auditd, falco, firewall, journald, logtamper, memory_sentinel, network, samhain};
 
