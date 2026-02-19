@@ -63,6 +63,7 @@ mod openclaw_config;
 mod policy;
 mod prompt_firewall;
 mod proxy;
+mod readiness;
 mod runtime;
 mod safe_cmd;
 mod safe_io;
@@ -745,6 +746,16 @@ async fn async_main() -> Result<()> {
     } else {
         eprintln!("Config loaded (with overlays from {})", config_d.display());
     }
+    // Enterprise readiness gate
+    let readiness_report = readiness::check_readiness(&config);
+    eprintln!("Readiness score: {}/{}", readiness_report.score, readiness_report.max_score);
+    for w in &readiness_report.warnings {
+        eprintln!("  ⚠ {}", w);
+    }
+    for f in &readiness_report.failures {
+        eprintln!("  ✗ FAILURE: {}", f);
+    }
+
     let notifier = SlackNotifier::new(&config.slack);
     let min_slack_level = Severity::from_str(&config.slack.min_slack_level);
 
@@ -754,6 +765,18 @@ async fn async_main() -> Result<()> {
     let (raw_tx, raw_rx) = mpsc::channel::<Alert>(1000);
     let (alert_tx, alert_rx) = mpsc::channel::<Alert>(1000);
     let (slack_tx, mut slack_rx) = mpsc::channel::<Alert>(100);
+
+    // Emit readiness alert if there are failures
+    if !readiness_report.failures.is_empty() {
+        let _ = raw_tx.send(Alert::new(
+            Severity::Critical,
+            "readiness",
+            &format!("Enterprise readiness score: {}/{} — {} failure(s): {}",
+                readiness_report.score, readiness_report.max_score,
+                readiness_report.failures.len(),
+                readiness_report.failures.join("; ")),
+        )).await;
+    }
 
     // Load policy engine
     let policy_engine = if config.policy.enabled {
