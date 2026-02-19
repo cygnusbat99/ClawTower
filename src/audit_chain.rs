@@ -12,11 +12,14 @@
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+
+type HmacSha256 = Hmac<Sha256>;
 
 use crate::alerts::Alert;
 
@@ -44,6 +47,14 @@ impl AuditEntry {
         hasher.update(input.as_bytes());
         format!("{:x}", hasher.finalize())
     }
+
+    fn compute_hmac(seq: u64, ts: &str, severity: &str, source: &str, message: &str, prev_hash: &str, secret: &str) -> String {
+        let input = format!("{}|{}|{}|{}|{}|{}", seq, ts, severity, source, message, prev_hash);
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+            .expect("HMAC accepts any key size");
+        mac.update(input.as_bytes());
+        format!("{:x}", mac.finalize().into_bytes())
+    }
 }
 
 /// Append-only hash chain for tamper-evident audit logging.
@@ -54,6 +65,7 @@ pub struct AuditChain {
     path: PathBuf,
     last_seq: u64,
     last_hash: String,
+    hmac_secret: Option<String>,
 }
 
 impl AuditChain {
@@ -102,7 +114,62 @@ impl AuditChain {
             (0, GENESIS_HASH.to_string())
         };
 
-        Ok(Self { path, last_seq, last_hash })
+        Ok(Self { path, last_seq, last_hash, hmac_secret: None })
+    }
+
+    /// Create or resume chain from file, with HMAC secret for chain integrity.
+    ///
+    /// When an HMAC secret is provided, `append()` uses HMAC-SHA256 instead of
+    /// plain SHA-256, making the chain unforgeable without the secret key.
+    /// Use [`AuditChain::verify_with_hmac`] to verify HMAC-protected chains.
+    pub fn new_with_hmac<P: AsRef<Path>>(path: P, hmac_secret: Option<String>) -> Result<Self> {
+        let path_ref = path.as_ref().to_path_buf();
+
+        // Ensure parent directory exists
+        if let Some(parent) = path_ref.parent() {
+            fs::create_dir_all(parent).context("Failed to create audit chain directory")?;
+        }
+
+        let (last_seq, last_hash) = if path_ref.exists() {
+            // Resume: read last entry
+            let file = fs::File::open(&path_ref)?;
+            let reader = BufReader::new(file);
+            let mut last_seq = 0u64;
+            let mut last_hash = GENESIS_HASH.to_string();
+
+            for line in reader.lines() {
+                let line = line?;
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<AuditEntry>(line) {
+                    Ok(entry) => {
+                        last_seq = entry.seq;
+                        last_hash = entry.hash;
+                    }
+                    Err(_) => {
+                        continue;
+                    }
+                }
+            }
+            // Verify chain integrity on resume
+            if last_seq > 0 {
+                let verify_result = match &hmac_secret {
+                    Some(secret) => Self::verify_with_hmac(&path_ref, secret),
+                    None => Self::verify(&path_ref),
+                };
+                if let Err(e) = verify_result {
+                    bail!("Audit chain integrity check failed on resume: {}. Run `clawtower verify-audit` for details.", e);
+                }
+            }
+
+            (last_seq, last_hash)
+        } else {
+            (0, GENESIS_HASH.to_string())
+        };
+
+        Ok(Self { path: path_ref, last_seq, last_hash, hmac_secret })
     }
 
     /// Append an alert to the chain
@@ -114,7 +181,10 @@ impl AuditChain {
         let message = &alert.message;
         let prev_hash = &self.last_hash;
 
-        let hash = AuditEntry::compute_hash(seq, &ts, &severity, source, message, prev_hash);
+        let hash = match &self.hmac_secret {
+            Some(secret) => AuditEntry::compute_hmac(seq, &ts, &severity, source, message, prev_hash, secret),
+            None => AuditEntry::compute_hash(seq, &ts, &severity, source, message, prev_hash),
+        };
 
         let entry = AuditEntry {
             seq,
@@ -171,6 +241,48 @@ impl AuditChain {
 
             if entry.hash != computed {
                 bail!("Hash mismatch at seq {}: expected {}, got {}", entry.seq, computed, entry.hash);
+            }
+
+            expected_prev_hash = entry.hash;
+            expected_seq += 1;
+        }
+
+        Ok(expected_seq - 1)
+    }
+
+    /// Verify the entire chain using HMAC. Returns Ok(entry_count) or error with first broken entry.
+    ///
+    /// Use this for chains created with [`AuditChain::new_with_hmac`]. The same secret
+    /// used during creation must be provided for verification to succeed.
+    pub fn verify_with_hmac(path: &Path, secret: &str) -> Result<u64> {
+        let file = fs::File::open(path).context("Failed to open audit chain file")?;
+        let reader = BufReader::new(file);
+        let mut expected_prev_hash = GENESIS_HASH.to_string();
+        let mut expected_seq = 1u64;
+
+        for line in reader.lines() {
+            let line = line?;
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let entry: AuditEntry = serde_json::from_str(line)
+                .context(format!("Failed to parse entry at seq {}", expected_seq))?;
+
+            if entry.seq != expected_seq {
+                bail!("Sequence mismatch at entry {}: expected {}, got {}", entry.seq, expected_seq, entry.seq);
+            }
+
+            if entry.prev_hash != expected_prev_hash {
+                bail!("Chain broken at seq {}: prev_hash mismatch", entry.seq);
+            }
+
+            let computed = AuditEntry::compute_hmac(
+                entry.seq, &entry.ts, &entry.severity, &entry.source, &entry.message, &entry.prev_hash, secret,
+            );
+
+            if entry.hash != computed {
+                bail!("HMAC mismatch at seq {}: expected {}, got {}", entry.seq, computed, entry.hash);
             }
 
             expected_prev_hash = entry.hash;
@@ -437,6 +549,109 @@ mod tests {
         // Resume should detect corruption
         let result = AuditChain::new(&path);
         assert!(result.is_err(), "Resuming from corrupted chain must fail");
+    }
+
+    #[test]
+    fn test_chain_entry_with_hmac_differs_from_plain_hash() {
+        let h1 = AuditEntry::compute_hash(1, "2024-01-01T00:00:00Z", "info", "test", "msg", GENESIS_HASH);
+        let h2 = AuditEntry::compute_hmac(1, "2024-01-01T00:00:00Z", "info", "test", "msg", GENESIS_HASH, "secret-key");
+        assert_ne!(h1, h2, "HMAC must differ from plain hash");
+    }
+
+    #[test]
+    fn test_hmac_deterministic() {
+        let h1 = AuditEntry::compute_hmac(1, "2024-01-01T00:00:00Z", "info", "test", "msg", GENESIS_HASH, "secret-key");
+        let h2 = AuditEntry::compute_hmac(1, "2024-01-01T00:00:00Z", "info", "test", "msg", GENESIS_HASH, "secret-key");
+        assert_eq!(h1, h2, "Same inputs and key must produce same HMAC");
+    }
+
+    #[test]
+    fn test_hmac_different_keys_produce_different_hashes() {
+        let h1 = AuditEntry::compute_hmac(1, "2024-01-01T00:00:00Z", "info", "test", "msg", GENESIS_HASH, "key-one");
+        let h2 = AuditEntry::compute_hmac(1, "2024-01-01T00:00:00Z", "info", "test", "msg", GENESIS_HASH, "key-two");
+        assert_ne!(h1, h2, "Different keys must produce different HMACs");
+    }
+
+    #[test]
+    fn test_hmac_chain_creates_and_verifies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hmac_audit.chain");
+        let secret = "test-instance-secret";
+
+        let mut chain = AuditChain::new_with_hmac(&path, Some(secret.to_string())).unwrap();
+        for i in 0..5 {
+            chain.append(&test_alert(Severity::Info, "test", &format!("hmac msg {}", i))).unwrap();
+        }
+
+        let count = AuditChain::verify_with_hmac(&path, secret).unwrap();
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn test_hmac_chain_fails_plain_verify() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hmac_audit.chain");
+        let secret = "test-instance-secret";
+
+        let mut chain = AuditChain::new_with_hmac(&path, Some(secret.to_string())).unwrap();
+        chain.append(&test_alert(Severity::Info, "test", "hmac entry")).unwrap();
+
+        // Plain verify should fail because hashes are HMAC, not plain SHA-256
+        let result = AuditChain::verify(&path);
+        assert!(result.is_err(), "HMAC chain must not pass plain hash verification");
+    }
+
+    #[test]
+    fn test_hmac_chain_fails_wrong_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hmac_audit.chain");
+
+        let mut chain = AuditChain::new_with_hmac(&path, Some("correct-secret".to_string())).unwrap();
+        chain.append(&test_alert(Severity::Info, "test", "hmac entry")).unwrap();
+
+        let result = AuditChain::verify_with_hmac(&path, "wrong-secret");
+        assert!(result.is_err(), "Wrong secret must fail HMAC verification");
+    }
+
+    #[test]
+    fn test_new_with_hmac_none_behaves_like_new() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plain_audit.chain");
+
+        // new_with_hmac(None) should produce plain hashes
+        let mut chain = AuditChain::new_with_hmac(&path, None).unwrap();
+        chain.append(&test_alert(Severity::Info, "test", "plain entry")).unwrap();
+
+        // Plain verify should work
+        let count = AuditChain::verify(&path).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_hmac_chain_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hmac_resume.chain");
+        let secret = "resume-secret";
+
+        // Write initial entries
+        {
+            let mut chain = AuditChain::new_with_hmac(&path, Some(secret.to_string())).unwrap();
+            for i in 0..3 {
+                chain.append(&test_alert(Severity::Info, "test", &format!("msg {}", i))).unwrap();
+            }
+        }
+
+        // Resume and write more
+        {
+            let mut chain = AuditChain::new_with_hmac(&path, Some(secret.to_string())).unwrap();
+            assert_eq!(chain.last_seq, 3);
+            for i in 3..5 {
+                chain.append(&test_alert(Severity::Warning, "test", &format!("msg {}", i))).unwrap();
+            }
+        }
+
+        let count = AuditChain::verify_with_hmac(&path, secret).unwrap();
+        assert_eq!(count, 5);
     }
 
     #[test]
