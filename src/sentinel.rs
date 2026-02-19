@@ -372,9 +372,18 @@ impl Sentinel {
             return;
         }
 
-        // Check file size limit
+        // Check file size limit — alert instead of silently dropping (M12)
         if let Ok(meta) = std::fs::metadata(file_path) {
             if meta.len() > self.config.max_file_size_kb * 1024 {
+                let policy = policy_for_path(&self.config, path);
+                if policy == Some(WatchPolicy::Protected) {
+                    let _ = self.alert_tx.send(Alert::new(
+                        Severity::Warning,
+                        "sentinel",
+                        &format!("Protected file {} exceeds size limit ({} KB > {} KB) — content not analyzed, attacker may be padding to evade",
+                            path, meta.len() / 1024, self.config.max_file_size_kb),
+                    )).await;
+                }
                 return;
             }
         }
@@ -2818,5 +2827,52 @@ mod tests {
         assert_eq!(restored, original, "Original content should be restored from shadow");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_oversized_protected_file_policy_detected() {
+        // Verify that policy_for_path correctly identifies protected files
+        // so the oversized alert can fire for them
+        let config = SentinelConfig {
+            enabled: true,
+            watch_paths: vec![
+                WatchPathConfig {
+                    path: "/etc/important.conf".to_string(),
+                    patterns: vec!["*".to_string()],
+                    policy: WatchPolicy::Protected,
+                },
+            ],
+            shadow_dir: "/tmp/test-shadow".to_string(),
+            quarantine_dir: "/tmp/test-quarantine".to_string(),
+            max_file_size_kb: 512,
+            content_scanning: false,
+        };
+        let policy = policy_for_path(&config, "/etc/important.conf");
+        assert_eq!(policy, Some(WatchPolicy::Protected),
+            "Protected file must be detected by policy_for_path");
+    }
+
+    #[test]
+    fn test_oversized_watched_file_no_alert() {
+        // Watched files that exceed size limit should NOT generate a warning
+        // (only protected files warrant the alert)
+        let config = SentinelConfig {
+            enabled: true,
+            watch_paths: vec![
+                WatchPathConfig {
+                    path: "/var/log/app.log".to_string(),
+                    patterns: vec!["*".to_string()],
+                    policy: WatchPolicy::Watched,
+                },
+            ],
+            shadow_dir: "/tmp/test-shadow".to_string(),
+            quarantine_dir: "/tmp/test-quarantine".to_string(),
+            max_file_size_kb: 512,
+            content_scanning: false,
+        };
+        let policy = policy_for_path(&config, "/var/log/app.log");
+        assert_eq!(policy, Some(WatchPolicy::Watched));
+        // Watched != Protected, so oversized alert would not fire
+        assert_ne!(policy, Some(WatchPolicy::Protected));
     }
 }
