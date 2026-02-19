@@ -40,12 +40,13 @@ pub(crate) struct CompiledDlpPattern {
 /// HTTP reverse proxy server that swaps virtual keys for real ones and scans for DLP violations.
 pub struct ProxyServer {
     config: ProxyConfig,
+    firewall_config: PromptFirewallConfig,
     alert_tx: mpsc::Sender<Alert>,
 }
 
 impl ProxyServer {
-    pub fn new(config: ProxyConfig, alert_tx: mpsc::Sender<Alert>) -> Self {
-        Self { config, alert_tx }
+    pub fn new(config: ProxyConfig, firewall_config: PromptFirewallConfig, alert_tx: mpsc::Sender<Alert>) -> Self {
+        Self { config, firewall_config, alert_tx }
     }
 
     pub async fn start(self) -> Result<()> {
@@ -68,10 +69,20 @@ impl ProxyServer {
             credential_states.insert(mapping.virtual_key.clone(), CredentialState::new(mapping));
         }
 
+        let prompt_firewall = PromptFirewall::load(
+            &self.firewall_config.patterns_path,
+            self.firewall_config.tier,
+            &self.firewall_config.overrides,
+        ).unwrap_or_else(|e| {
+            eprintln!("Prompt firewall load error: {}", e);
+            PromptFirewall::load("/dev/null", 2, &std::collections::HashMap::new()).unwrap()
+        });
+
         let state = Arc::new(ProxyState {
             key_mappings: self.config.key_mapping.clone(),
             credential_states,
             dlp_patterns: compiled_patterns,
+            prompt_firewall,
             alert_tx: self.alert_tx,
         });
 
@@ -316,6 +327,52 @@ async fn handle_request(
             }
             body
         }
+    };
+
+    // Prompt firewall scan (after DLP, before forwarding)
+    let final_body = if state.prompt_firewall.total_patterns() > 0 {
+        match state.prompt_firewall.scan(&final_body) {
+            FirewallResult::Block { matches } => {
+                let pattern_names: Vec<&str> = matches.iter().map(|m| m.pattern_name.as_str()).collect();
+                let alert = Alert::new(
+                    Severity::Critical,
+                    "prompt-firewall",
+                    &format!("BLOCKED prompt: matched [{}]", pattern_names.join(", ")),
+                );
+                let _ = state.alert_tx.send(alert).await;
+                return Ok(Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"error":"Prompt blocked by firewall policy","patterns":["{}"]}}"#,
+                        pattern_names.join("\",\"")
+                    )))
+                    .unwrap());
+            }
+            FirewallResult::Warn { matches } => {
+                let pattern_names: Vec<&str> = matches.iter().map(|m| m.pattern_name.as_str()).collect();
+                let alert = Alert::new(
+                    Severity::Warning,
+                    "prompt-firewall",
+                    &format!("Suspicious prompt: matched [{}]", pattern_names.join(", ")),
+                );
+                let _ = state.alert_tx.send(alert).await;
+                final_body
+            }
+            FirewallResult::Log { matches } => {
+                let pattern_names: Vec<&str> = matches.iter().map(|m| m.pattern_name.as_str()).collect();
+                let alert = Alert::new(
+                    Severity::Info,
+                    "prompt-firewall",
+                    &format!("Prompt logged: matched [{}]", pattern_names.join(", ")),
+                );
+                let _ = state.alert_tx.send(alert).await;
+                final_body
+            }
+            FirewallResult::Pass => final_body,
+        }
+    } else {
+        final_body
     };
 
     // Build upstream URI

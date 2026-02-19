@@ -888,9 +888,10 @@ async fn async_main() -> Result<()> {
     // Spawn proxy server if enabled
     if config.proxy.enabled {
         let proxy_config = config.proxy.clone();
+        let firewall_config = config.prompt_firewall.clone();
         let proxy_tx = raw_tx.clone();
         tokio::spawn(async move {
-            let server = proxy::ProxyServer::new(proxy_config, proxy_tx);
+            let server = proxy::ProxyServer::new(proxy_config, firewall_config, proxy_tx);
             if let Err(e) = server.start().await {
                 eprintln!("Proxy server error: {}", e);
             }
