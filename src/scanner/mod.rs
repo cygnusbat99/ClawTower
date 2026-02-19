@@ -223,7 +223,7 @@ impl SecurityScanner {
 
             // Phase 2: Config drift
             if openclaw_config.config_drift_check {
-                results.extend(crate::openclaw_config::scan_config_drift(
+                results.extend(crate::config::openclaw::scan_config_drift(
                     &openclaw_config.config_path, &openclaw_config.baseline_path));
             }
 

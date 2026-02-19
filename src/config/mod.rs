@@ -11,11 +11,16 @@
 //! so missing fields gracefully fall back to sensible defaults. Config is loaded
 //! from `/etc/clawtower/config.toml` by default.
 
+pub mod merge;
+pub mod cloud;
+pub mod openclaw;
+pub mod export;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use crate::detect::barnacle::BarnacleConfig;
-use crate::config_merge::merge_toml;
+use self::merge::merge_toml;
 
 /// Root configuration struct, deserialized from TOML.
 ///
@@ -388,16 +393,16 @@ impl Default for NetPolicyConfig {
 pub use crate::core::response::{ResponseConfig, IncidentModeConfig};
 
 // Cloud config types moved to cloud.rs — re-exported for backward compatibility
-pub use crate::cloud::CloudConfig;
+pub use self::cloud::CloudConfig;
 
 // Export config types moved to export.rs — re-exported for backward compatibility
-pub use crate::export::ExportConfig;
+pub use self::export::ExportConfig;
 
 // Sentinel config types moved to sentinel.rs — re-exported for backward compatibility
 pub use crate::sentinel::{SentinelConfig, WatchPathConfig, WatchPolicy};
 
 // OpenClaw config types moved to openclaw_config.rs — re-exported for backward compatibility
-pub use crate::openclaw_config::OpenClawConfig;
+pub use self::openclaw::OpenClawConfig;
 
 /// Apply all `.toml` overlays from a config.d/ directory to a base TOML value.
 /// Files are loaded in alphabetical order. No-op if the directory doesn't exist.
